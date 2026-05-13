@@ -1,11 +1,12 @@
 #include "gamepad.hpp"
 #include "driver/gpio.h"
+#include "esp_log.h"
 #include <cstdlib>
 
 #define ADC_UNIT ADC_UNIT_1
 #define ADC_ATTEN ADC_ATTEN_DB_12
 
-// Verified hardware mapping from schematic + MicroPython config
+// Pin Mapping
 #define PIN_LEFT_X ADC_CHANNEL_3  // GPIO 4
 #define PIN_LEFT_Y ADC_CHANNEL_4  // GPIO 5
 #define PIN_RIGHT_X ADC_CHANNEL_6 // GPIO 7
@@ -38,22 +39,26 @@ void Gamepad::init() {
         gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
     }
 
-    adc_oneshot_unit_init_cfg_t init_config = { .unit_id = ADC_UNIT };
-    adc_oneshot_new_unit(&init_config, &adc_handle_);
+    // Fixed initialization for C++ compatibility
+    adc_oneshot_unit_init_cfg_t init_config = {};
+    init_config.unit_id = ADC_UNIT;
+    init_config.clk_src = ADC_DIGI_CLK_SRC_DEFAULT;
+    init_config.ulp_mode = ADC_ONESHOT_ULP_MODE_DISABLE;
+    
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config, &adc_handle_));
 
-    adc_oneshot_chan_cfg_t config = {
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
-        .atten = ADC_ATTEN,
-    };
-    adc_oneshot_config_channel(adc_handle_, PIN_LEFT_X, &config);
-    adc_oneshot_config_channel(adc_handle_, PIN_LEFT_Y, &config);
-    adc_oneshot_config_channel(adc_handle_, PIN_RIGHT_X, &config);
-    adc_oneshot_config_channel(adc_handle_, PIN_RIGHT_Y, &config);
+    adc_oneshot_chan_cfg_t config = {};
+    config.atten = ADC_ATTEN;
+    config.bitwidth = ADC_BITWIDTH_DEFAULT;
+    
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle_, PIN_LEFT_X, &config));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle_, PIN_LEFT_Y, &config));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle_, PIN_RIGHT_X, &config));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle_, PIN_RIGHT_Y, &config));
 }
 
 GamepadState Gamepad::read() {
-    GamepadState s;
-    // Low = Pressed (Pull-up)
+    GamepadState s = {};
     s.up = !gpio_get_level(PIN_UP);
     s.down = !gpio_get_level(PIN_DOWN);
     s.left = !gpio_get_level(PIN_LEFT);
@@ -75,14 +80,14 @@ GamepadState Gamepad::read() {
 
     auto map_axis = [](int val) -> int8_t {
         int res = (val - 2048) / 16;
-        if (std::abs(res) < 15) return 0; // Deadzone
+        if (std::abs(res) < 15) return 0;
         return (res > 127) ? 127 : (res < -128 ? -128 : res);
     };
 
     s.left_x = map_axis(lx);
-    s.left_y = -map_axis(ly); // Invert Y
+    s.left_y = -map_axis(ly);
     s.right_x = map_axis(rx);
-    s.right_y = -map_axis(ry); // Invert Y
+    s.right_y = -map_axis(ry);
 
     return s;
 }
