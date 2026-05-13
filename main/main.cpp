@@ -29,7 +29,8 @@ JPEGDEC jpeg;
 WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
-uint8_t frame_buffer[32768]; 
+#define FRAME_BUFFER_SIZE 24576
+uint8_t frame_buffer[FRAME_BUFFER_SIZE]; 
 volatile bool hasNewFrame = false;
 volatile uint32_t latestFrameLength = 0;
 volatile bool pairedFlag = false;
@@ -45,17 +46,22 @@ unsigned long lastDiscoveryTime = 0;
 unsigned long lastJoystickTime = 0;
 
 int JPEGDraw(JPEGDRAW *pDraw) {
-    tft.pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
+    if (pDraw && pDraw->pPixels) {
+        tft.pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
+    }
     return 1; 
 }
 
 void onVideoFrame(uint32_t length) {
     if (currentState != CONNECTED || hasNewFrame) return;
-    latestFrameLength = length;
-    hasNewFrame = true;
+    if (length > 0 && length <= FRAME_BUFFER_SIZE) {
+        latestFrameLength = length;
+        hasNewFrame = true;
+    }
 }
 
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
+    if (!data || len <= 0) return;
     if (currentState == SEARCHING && len >= 9 && strncmp((const char*)data, "pyCAR_ACK", 9) == 0) {
         memcpy(carMac, mac, 6);
         pairedFlag = true;
@@ -92,45 +98,58 @@ uint8_t getDPadAndButtons() {
 }
 
 void setup() {
+    delay(1000);
     Serial.begin(115200);
     const int buttons[] = {BTN_START, BTN_BACK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
     for (int pin : buttons) pinMode(pin, INPUT_PULLUP);
+    
     tft.init();
     tft.setRotation(0); 
     tft.fillScreen(TFT_WHITE);
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.drawString("pyController Search...", 10, 110, 2);
+
+    memset(frame_buffer, 0, FRAME_BUFFER_SIZE);
+
     WiFi.mode(WIFI_STA);
-    esp_now_init();
+    if (esp_now_init() != ESP_OK) return;
+
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, broadcastMac, 6);
     peerInfo.channel = 1;
     esp_now_add_peer(&peerInfo);
     esp_now_register_recv_cb(onDataRecv);
+
     radio.setRecvBuffer(frame_buffer); 
     radio.setRecvCallback(onVideoFrame);
-    radio.init(240); 
+    radio.init(160); 
 }
 
 void loop() {
     unsigned long now = millis();
     if (pairedFlag) {
+        pairedFlag = false;
         esp_now_peer_info_t peerInfo = {};
         memcpy(peerInfo.peer_addr, carMac, 6);
         peerInfo.channel = 1;
         if (!esp_now_is_peer_exist(carMac)) esp_now_add_peer(&peerInfo);
         currentState = CONNECTED;
         tft.fillScreen(TFT_BLACK);
-        pairedFlag = false;
     }
-    if (hasNewFrame && currentState == CONNECTED) {
-        if (jpeg.openRAM(frame_buffer, latestFrameLength, JPEGDraw)) {
-            jpeg.setPixelType(RGB565_BIG_ENDIAN); 
-            jpeg.decode(0, 0, 0);                 
-            jpeg.close();
-            tft.setTextColor(TFT_GREEN, TFT_BLACK);
-            tft.drawString("Dist: " + String(currentDist, 1) + "cm", 5, 220, 2);
+
+    if (hasNewFrame) {
+        if (currentState == CONNECTED && latestFrameLength > 4 && frame_buffer[0] == 0xFF) {
+            if (jpeg.openRAM(frame_buffer, latestFrameLength, JPEGDraw)) {
+                jpeg.setPixelType(RGB565_BIG_ENDIAN); 
+                jpeg.decode(0, 0, 0);                 
+                jpeg.close();
+                tft.setTextColor(TFT_GREEN, TFT_BLACK);
+                tft.drawString("Dist: " + String(currentDist, 1) + "cm", 5, 220, 2);
+            }
         }
         hasNewFrame = false;
     }
+
     if (currentState == SEARCHING && now - lastDiscoveryTime > 500) {
         esp_now_send(broadcastMac, (uint8_t*)"pyCAR_DISCOVER", 14);
         lastDiscoveryTime = now;
