@@ -344,3 +344,17 @@ void LCD::draw_string(int16_t x, int16_t y, const char* str, uint16_t color, uin
         str++;
     }
 }
+
+void LCD::draw_bitmap(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* data) {
+    if (w == 0 || h == 0) return;
+    set_address_window(x, y, x + w - 1, y + h - 1);
+    
+    int len = w * h * 2;
+    // Pushing the raw array chunk to a DMA-capable buffer prevents ESP-IDF SPI driver crashes
+    uint8_t* buffer = (uint8_t*)heap_caps_malloc(len, MALLOC_CAP_DMA);
+    if (buffer) {
+        memcpy(buffer, data, len);
+        send_data(buffer, len);
+        heap_caps_free(buffer);
+    }
+}

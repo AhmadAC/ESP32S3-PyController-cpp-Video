@@ -1,157 +1,301 @@
-// src/main.cpp
-#include <Arduino.h>
-#include <WiFi.h>
-#include <esp_now.h>
-#include <esp_wifi.h>
-#include "esp_camera.h"
+#include <stdio.h>
+#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "esp_system.h"
+#include "esp_wifi.h"
+#include "esp_now.h"
+#include "esp_mac.h"
+#include "nvs_flash.h"
+#include "esp_log.h"
 
-// Include ESPNowCam and the WiFi Raw Comm Wrapper
-#include <WiFiRawComm.h>
-#include <ESPNowCam.h>
+#include "lcd.h"
+#include "gamepad.hpp"
 
-// ----------------------------------------------------
-// Seeed Studio XIAO ESP32S3 Sense OV2640 Pinout
-// ----------------------------------------------------
-#define PWDN_GPIO_NUM     -1
-#define RESET_GPIO_NUM    -1
-#define XCLK_GPIO_NUM     10
-#define SIOD_GPIO_NUM     40
-#define SIOC_GPIO_NUM     39
-#define Y9_GPIO_NUM       48
-#define Y8_GPIO_NUM       11
-#define Y7_GPIO_NUM       12
-#define Y6_GPIO_NUM       14
-#define Y5_GPIO_NUM       16
-#define Y4_GPIO_NUM       18
-#define Y3_GPIO_NUM       17
-#define Y2_GPIO_NUM       15
-#define VSYNC_GPIO_NUM    38
-#define HREF_GPIO_NUM     47
-#define PCLK_GPIO_NUM     13
+static const char *TAG = "pyController";
 
-// Instantiate WiFi Raw Communication for the camera
-WiFiRawComm wifiRaw;
-ESPNowCam radio(&wifiRaw);
+// --- Global State Variables ---
+static volatile bool is_paired = false;
+static volatile bool has_car = false;
+static volatile bool has_cam = false;
 
-// Connection state variables
-uint8_t pyControllerMac[6];
-volatile bool isConnected = false;
+static uint8_t peer_mac[6] = {0};
+static const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// Flags for triggering image capture
-volatile bool requestImage = false;
-bool lastBtnX = false;
+static char distance_str[32] = "0.00 cm";
+static bool line_follower_state = false;
+static bool sync_state = false;
 
-// ----------------------------------------------------
-// ESP-NOW Receive Callback (Listens for Handshake / Controls)
-// ----------------------------------------------------
-void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
-    if (!isConnected && len >= 14 && strncmp((const char*)incomingData, "pyCAR_DISCOVER", 14) == 0) {
-        Serial.println("Received 'pyCAR_DISCOVER' via ESP-NOW!");
-        memcpy(pyControllerMac, mac, 6);
-        
-        esp_now_peer_info_t peerInfo = {};
-        memcpy(peerInfo.peer_addr, pyControllerMac, 6);
-        peerInfo.channel = 1; 
-        peerInfo.encrypt = false;
-        
-        if (!esp_now_is_peer_exist(pyControllerMac)) {
-            esp_now_add_peer(&peerInfo);
+// Queue definitions for fast Image Rendering handling
+typedef struct {
+    uint16_t chunk_id;
+    uint8_t data[240];
+} ImageChunkMsg;
+
+static QueueHandle_t image_queue = NULL;
+
+// --- ESP-NOW Receive Callback ---
+void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int data_len) {
+    if (data == NULL || data_len <= 0) return;
+
+    // Check if it's the pairing acknowledgement from PyCar or PyCam
+    if (data_len == 9 && (memcmp(data, "pyCAR_ACK", 9) == 0 || memcmp(data, "pyCAM_ACK", 9) == 0)) {
+        if (!is_paired) {
+            memcpy((void*)peer_mac, esp_now_info->src_addr, 6);
+            is_paired = true;
         }
-
-        const char* ackMsg = "pyCAM_ACK";
-        esp_now_send(pyControllerMac, (uint8_t *)ackMsg, strlen(ackMsg));
-        
-        Serial.println("Sent 'pyCAM_ACK' via ESP-NOW. Proceeding to boot camera!");
-        isConnected = true;
-    } 
-    // Intercept Gamepad Control Packet (6 bytes, starts with 67)
-    else if (isConnected && len == 6 && incomingData[0] == 67) {
-        uint8_t btns = incomingData[5];
-        bool btnX = (btns & (1 << 7)) != 0; // X button is stored at bit 7
-        
-        // Detect a rising edge (button was just pressed)
-        if (btnX && !lastBtnX) {
-            requestImage = true;
-            Serial.println("X Button Pressed! Queuing single image capture...");
-        }
-        lastBtnX = btnX;
-    }
-}
-
-void setup() {
-    Serial.begin(115200);
-    delay(1000);
-
-    // --- 1. Wi-Fi & ESP-NOW Init ---
-    // The ESPNowCam/WiFiRawComm library handles all WiFi initialization internally.
-    // Calling Arduino's WiFi.mode() here will cause a duplicate netif crash.
-    radio.init(512); 
-    radio.setChannel(1);
-    
-    if (esp_now_init() != ESP_OK) {
-        Serial.println("Error initializing ESP-NOW");
-        return;
-    }
-
-    esp_now_register_recv_cb(onDataRecv);
-
-    Serial.println("Waiting for PyController to broadcast 'pyCAR_DISCOVER'...");
-    
-    while (!isConnected) {
-        delay(100);
-    }
-
-    radio.setTarget(pyControllerMac);
-
-    // --- 2. Camera Initialization ---
-    camera_config_t config;
-    config.ledc_channel = LEDC_CHANNEL_0;
-    config.ledc_timer   = LEDC_TIMER_0;
-    config.pin_d0       = Y2_GPIO_NUM;
-    config.pin_d1       = Y3_GPIO_NUM;
-    config.pin_d2       = Y4_GPIO_NUM;
-    config.pin_d3       = Y5_GPIO_NUM;
-    config.pin_d4       = Y6_GPIO_NUM;
-    config.pin_d5       = Y7_GPIO_NUM;
-    config.pin_d6       = Y8_GPIO_NUM;
-    config.pin_d7       = Y9_GPIO_NUM;
-    config.pin_xclk     = XCLK_GPIO_NUM;
-    config.pin_pclk     = PCLK_GPIO_NUM;
-    config.pin_vsync    = VSYNC_GPIO_NUM;
-    config.pin_href     = HREF_GPIO_NUM;
-    config.pin_sccb_sda = SIOD_GPIO_NUM;
-    config.pin_sccb_scl = SIOC_GPIO_NUM;
-    config.pin_pwdn     = PWDN_GPIO_NUM;
-    config.pin_reset    = RESET_GPIO_NUM;
-
-    config.xclk_freq_hz = 20000000;
-    config.pixel_format = PIXFORMAT_JPEG;
-    config.frame_size   = FRAMESIZE_QVGA; 
-    config.jpeg_quality = 12; 
-    config.fb_count     = 2;  
-    config.grab_mode    = CAMERA_GRAB_LATEST;
-
-    if (esp_camera_init(&config) != ESP_OK) {
-        Serial.println("Camera Init Failed");
-        return;
-    }
-    Serial.println("Camera initialized! Waiting for X Button input.");
-}
-
-void loop() {
-    if (isConnected && requestImage) {
-        requestImage = false; // Reset the flag so we only send one image per press
-        
-        camera_fb_t *fb = esp_camera_fb_get();
-        if (fb) {
-            radio.sendData(fb->buf, fb->len);
-            esp_camera_fb_return(fb);
-            Serial.println("Single image sent successfully.");
+        if (memcmp(data, "pyCAM_ACK", 9) == 0) {
+            has_cam = true;
         } else {
-            Serial.println("Failed to capture image.");
+            has_car = true;
         }
+        return;
     }
     
-    // Yield time to the watchdog and network tasks
-    delay(10);
+    // Check if it's an Image Pixel Chunk (Magic 0xCC, Type 0x01)
+    if (data_len == 244 && data[0] == 0xCC && data[1] == 0x01) {
+        has_cam = true; 
+        if (image_queue != NULL) {
+            ImageChunkMsg msg;
+            // Assemble the 16-bit chunk ID dynamically from bytes
+            msg.chunk_id = data[2] | (data[3] << 8);
+            memcpy(msg.data, data + 4, 240);
+            
+            // Dispatch to main loop so we don't hold up the network driver
+            xQueueSend(image_queue, &msg, 0);
+        }
+        return;
+    }
+
+    // Check if it's a telemetry update from PyCar (e.g., "D:12.34,L:1,X:0")
+    if (data_len >= 2 && data[0] == 'D' && data[1] == ':') {
+        has_car = true; // Flag that we are receiving Car telemetry
+        char buf[64] = {0};
+        memcpy(buf, data, data_len < 63 ? data_len : 63);
+
+        char *d_ptr = strstr(buf, "D:");
+        if (d_ptr) {
+            float dist = 0.0f;
+            if (sscanf(d_ptr, "D:%f", &dist) == 1) {
+                snprintf(distance_str, sizeof(distance_str), "%.2f cm", dist);
+            }
+        }
+
+        char *l_ptr = strstr(buf, "L:");
+        if (l_ptr) {
+            int lf = 0;
+            if (sscanf(l_ptr, "L:%d", &lf) == 1) {
+                line_follower_state = (lf == 1);
+            }
+        }
+
+        char *x_ptr = strstr(buf, "X:");
+        if (x_ptr) {
+            int sync = 0;
+            if (sscanf(x_ptr, "X:%d", &sync) == 1) {
+                sync_state = (sync == 1);
+            }
+        }
+    }
+}
+
+// --- Application Entry Point ---
+extern "C" void app_main(void) {
+    // Initialize standard image transport queue
+    image_queue = xQueueCreate(100, sizeof(ImageChunkMsg));
+
+    // 1. Initialize Non-Volatile Storage
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    // 2. Initialize Hardware Peripherals
+    LCD lcd;
+    lcd.init();
+    
+    lcd.fill_screen(COLOR_WHITE);
+    lcd.draw_string(10, 10, "Booting...", COLOR_BLACK, COLOR_WHITE, 2);
+
+    Gamepad gamepad;
+    gamepad.init();
+
+    // 3. Initialize Wi-Fi and ESP-NOW
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));
+
+    ESP_ERROR_CHECK(esp_now_init());
+    ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));
+
+    // Register Broadcast Peer
+    esp_now_peer_info_t peer_info = {};
+    peer_info.channel = 1;
+    peer_info.encrypt = false;
+    memcpy(peer_info.peer_addr, broadcast_mac, 6);
+    ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
+
+    // 4. Pairing Loop
+    lcd.fill_screen(COLOR_WHITE);
+    lcd.draw_string(10, 100, "Searching for", COLOR_BLACK, COLOR_WHITE, 2);
+    lcd.draw_string(10, 130, "PyCar / PyCam...", COLOR_BLACK, COLOR_WHITE, 2);
+    ESP_LOGI(TAG, "Searching for PyCar or PyCam...");
+
+    while (!is_paired) {
+        // Ping out the discovery message
+        esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
+        vTaskDelay(pdMS_TO_TICKS(100)); // Yield to allow receiving the ACK and prevent Watchdog triggers
+    }
+
+    ESP_LOGI(TAG, "Connected to Peer!");
+    
+    // Register the newly discovered peer MAC address
+    memcpy(peer_info.peer_addr, peer_mac, 6);
+    ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
+
+    // Clear screen for dynamic UI rendering
+    lcd.fill_screen(COLOR_WHITE);
+
+    // --- State Timers & Caches ---
+    TickType_t last_lcd_update = xTaskGetTickCount();
+    TickType_t last_tx_update = xTaskGetTickCount();
+    char last_dist_str_on_screen[32] = "";
+    bool last_lf_state = false;
+    bool last_sync_state = false;
+    
+    bool car_ui_drawn = false;
+    bool cam_ui_drawn = false;
+
+    bool is_rendering_image = false;
+    TickType_t last_image_chunk_time = xTaskGetTickCount();
+
+    // 5. Main Control Loop
+    while (true) {
+        TickType_t now = xTaskGetTickCount();
+
+        // -----------------------------------------------------------------
+        // A. INCOMING PHOTO CHUNK HANDLER
+        // -----------------------------------------------------------------
+        ImageChunkMsg msg;
+        while (xQueueReceive(image_queue, &msg, 0) == pdTRUE) {
+            // Signal to pause the UI redraw engine so it doesn't overwrite our photo
+            is_rendering_image = true;
+            last_image_chunk_time = now;
+
+            // Geometry logic for our 480 blocks (chunks)
+            int y = msg.chunk_id / 2;
+            int x_start = (msg.chunk_id % 2) * 120;
+            
+            // Shovel the raw pixels straight to the SPI hardware! 
+            lcd.draw_bitmap(x_start, y, 120, 1, (uint16_t*)msg.data);
+        }
+
+        // -----------------------------------------------------------------
+        // B. RATE-LIMITED LCD UPDATE (200ms interval)
+        // -----------------------------------------------------------------
+        if (pdTICKS_TO_MS(now - last_lcd_update) >= 200) {
+            
+            // If we drew an image, keep it on screen for 3 seconds before restoring text UI
+            if (is_rendering_image) {
+                if (pdTICKS_TO_MS(now - last_image_chunk_time) > 3000) {
+                    is_rendering_image = false;
+                    car_ui_drawn = false;
+                    cam_ui_drawn = false;
+                    last_dist_str_on_screen[0] = '\0'; // Force string cache refresh
+                    lcd.fill_screen(COLOR_WHITE);      // Clear canvas
+                }
+            } 
+            else {
+                // Regular UI Renderer
+                if (has_car) {
+                    if (!car_ui_drawn) {
+                        lcd.fill_screen(COLOR_WHITE);
+                        lcd.draw_string(10, 10, "PyCar Connected!", COLOR_GREEN, COLOR_WHITE, 2);
+                        lcd.draw_string(10, 160, "Ultrasonic:", COLOR_BLACK, COLOR_WHITE, 2);
+                        car_ui_drawn = true;
+                        cam_ui_drawn = false;
+                    }
+
+                    // Distance Text Update
+                    if (strcmp(distance_str, last_dist_str_on_screen) != 0) {
+                        char padded_text[32];
+                        snprintf(padded_text, sizeof(padded_text), "%-12s", distance_str);
+                        lcd.draw_string(10, 190, padded_text, COLOR_BLACK, COLOR_WHITE, 2);
+                        strcpy(last_dist_str_on_screen, distance_str);
+                    }
+
+                    // Line Follower Icon Update
+                    if (line_follower_state != last_lf_state) {
+                        const char* icon = line_follower_state ? "[L]" : "   ";
+                        uint16_t fg_color = line_follower_state ? COLOR_BLACK : COLOR_WHITE;
+                        lcd.draw_string(190, 10, icon, fg_color, COLOR_WHITE, 2);
+                        last_lf_state = line_follower_state;
+                    }
+
+                    // Sync State Icon Update
+                    if (sync_state != last_sync_state) {
+                        const char* icon = sync_state ? "[X]" : "   ";
+                        uint16_t fg_color = sync_state ? COLOR_RED : COLOR_WHITE;
+                        lcd.draw_string(140, 10, icon, fg_color, COLOR_WHITE, 2);
+                        last_sync_state = sync_state;
+                    }
+                } 
+                else if (has_cam && !has_car) {
+                    // If we only have the camera, show the camera UI instruction
+                    if (!cam_ui_drawn) {
+                        lcd.fill_screen(COLOR_BLACK);
+                        lcd.draw_string(10, 10, "PyCam Connected", COLOR_GREEN, COLOR_BLACK, 2);
+                        lcd.draw_string(10, 100, "Press X button", COLOR_WHITE, COLOR_BLACK, 2);
+                        lcd.draw_string(10, 130, "to shoot Photo", COLOR_WHITE, COLOR_BLACK, 2);
+                        cam_ui_drawn = true;
+                        car_ui_drawn = false;
+                    }
+                }
+            }
+
+            last_lcd_update = now;
+        }
+
+        // -----------------------------------------------------------------
+        // C. RATE-LIMITED GAMEPAD TX (50ms interval / ~20Hz)
+        // -----------------------------------------------------------------
+        if (pdTICKS_TO_MS(now - last_tx_update) >= 50) {
+            GamepadState state = gamepad.read();
+            
+            uint8_t lx = (uint8_t)(state.left_x + 128);
+            uint8_t ly = (uint8_t)(state.left_y + 128);
+            uint8_t rx = (uint8_t)(state.right_x + 128);
+            uint8_t ry = (uint8_t)(state.right_y + 128);
+            
+            uint8_t btns = 8; 
+            if (state.up && state.right)         btns = 1;
+            else if (state.right && state.down)  btns = 3;
+            else if (state.left && state.down)   btns = 5;
+            else if (state.left && state.up)     btns = 7;
+            else if (state.up)                   btns = 0;
+            else if (state.right)                btns = 2;
+            else if (state.down)                 btns = 4;
+            else if (state.left)                 btns = 6;
+            
+            if (state.x) btns |= (1 << 7);
+            if (state.a) btns |= (1 << 6);
+            if (state.b) btns |= (1 << 5);
+            if (state.y) btns |= (1 << 4);
+
+            uint8_t payload[6] = {67, lx, ly, rx, ry, btns};
+            esp_now_send(peer_mac, payload, sizeof(payload));
+
+            last_tx_update = now;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
 }
