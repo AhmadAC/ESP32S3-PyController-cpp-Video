@@ -1,4 +1,4 @@
-// src\main.cpp
+// src/main.cpp
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
@@ -9,7 +9,7 @@
 #include <WiFiRawComm.h>
 #include <ESPNowCam.h>
 
-// --- Gamepad Pinout (from your mpconfigboard.h) ---
+// --- Gamepad Pinout ---
 #define BTN_START 0
 #define BTN_BACK  1
 #define BTN_A_OK  6
@@ -73,7 +73,7 @@ void onVideoFrame(uint8_t *buffer, size_t length) {
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
-            tft.fillCircle(220, 20, 10, tft.getPixel(220, 20)); // "Erase" by drawing background color
+            tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); // "Erase" by drawing background color
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
     }
@@ -163,9 +163,10 @@ void setup() {
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting Controller...", 20, 110, 4);
 
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    // Initialize RAW WiFi Communication FIRST (This handles ESP-IDF WiFi setup internally)
+    // Removing Arduino WiFi.mode() prevents the duplicate netif crash!
+    radio.init(512); 
+    radio.setChannel(1);
 
     if (esp_now_init() != ESP_OK) {
         Serial.println("ESP-NOW Init Failed");
@@ -180,8 +181,7 @@ void setup() {
     
     esp_now_register_recv_cb(onDataRecv);
 
-    radio.init(512); 
-    radio.setReceiveCallback(onVideoFrame);
+    radio.setRecvCallback(onVideoFrame);
 
     tft.fillScreen(TFT_WHITE);
     tft.drawString("Searching PyCar/PyCam...", 10, 110, 2);
