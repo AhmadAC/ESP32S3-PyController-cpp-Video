@@ -96,7 +96,7 @@ static const unsigned char asc2_1608[95][16] = {
     {0x01,0x04,0x01,0xFC,0x00,0x84,0x01,0x00,0x01,0x00,0x01,0x04,0x00,0xFC,0x00,0x04},/*"n",78*/
     {0x00,0x00,0x00,0xF8,0x01,0x04,0x01,0x04,0x01,0x04,0x01,0x04,0x00,0xF8,0x00,0x00},/*"o",79*/
     {0x01,0x01,0x01,0xFF,0x00,0x85,0x01,0x04,0x01,0x04,0x00,0x88,0x00,0x70,0x00,0x00},/*"p",80*/
-    {0x00,0x00,0x00,0x70,0x00,0x88,0x01,0x04,0x01,0x04,0x01,0x05,0x01,0xFF,0x00,0x01},/*"q",81*/
+    {0x00,0x00,0x00,0x70,0x00,0x88,0x01,0x04,0x01,0x04,0x01,0x05,0x1F,0xFF,0x00,0x01},/*"q",81*/ // Corrected
     {0x01,0x04,0x01,0x04,0x01,0xFC,0x00,0x84,0x01,0x04,0x01,0x00,0x01,0x80,0x00,0x00},/*"r",82*/
     {0x00,0x00,0x00,0xCC,0x01,0x24,0x01,0x24,0x01,0x24,0x01,0x24,0x01,0x98,0x00,0x00},/*"s",83*/
     {0x00,0x00,0x01,0x00,0x01,0x00,0x07,0xF8,0x01,0x04,0x01,0x04,0x00,0x00,0x00,0x00},/*"t",84*/
@@ -106,12 +106,10 @@ static const unsigned char asc2_1608[95][16] = {
     {0x00,0x00,0x01,0x04,0x01,0x8C,0x00,0x74,0x01,0x70,0x01,0x8C,0x01,0x04,0x00,0x00},/*"x",88*/
     {0x01,0x01,0x01,0x81,0x01,0x71,0x00,0x0E,0x00,0x18,0x01,0x60,0x01,0x80,0x01,0x00},/*"y",89*/
     {0x00,0x00,0x01,0x84,0x01,0x0C,0x01,0x34,0x01,0x44,0x01,0x84,0x01,0x0C,0x00,0x00},/*"z",90*/
-    {0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFE,0x40,0x02,0x40,0x02,0x40,0x02,0x00,0x00},/*"[",59*/
-    {0x00,0x00,0x30,0x00,0x0C,0x00,0x03,0x80,0x00,0x60,0x00,0x1C,0x00,0x03,0x00,0x00},/*"\",60*/
-    {0x00,0x00,0x40,0x02,0x40,0x02,0x40,0x02,0x7F,0xFE,0x00,0x00,0x00,0x00,0x00,0x00},/*"]",61*/
-    {0x00,0x00,0x00,0x00,0x20,0x00,0x40,0x00,0x40,0x00,0x40,0x00,0x20,0x00,0x00,0x00},/*"^",62*/
-    {0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x01},/*"_",63*/
-    {0x00,0x00,0x40,0x00,0x40,0x00,0x20,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00} /*"`",64*/
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFE,0x40,0x02,0x40,0x02,0x40,0x02,0x00,0x00},/*"{",91*/
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF,0xFF,0x00,0x00,0x00,0x00,0x00,0x00},/*"|",92*/
+    {0x00,0x00,0x40,0x02,0x40,0x02,0x40,0x02,0x7F,0xFE,0x00,0x00,0x00,0x00,0x00,0x00},/*"]",93*/
+    {0x00,0x00,0x60,0x00,0x80,0x00,0x80,0x00,0x40,0x00,0x40,0x00,0x20,0x00,0x20,0x00} /*"~",94*/
 };
 
 LCD::LCD() : spi_handle_(nullptr) {
@@ -172,74 +170,74 @@ void LCD::init() {
     buscfg.sclk_io_num = PIN_NUM_CLK;
     buscfg.quadwp_io_num = -1;
     buscfg.quadhd_io_num = -1;
-    buscfg.max_transfer_sz = DISP_WIDTH * 20 * 2 + 8; // Safely process large DMA chunks
+    buscfg.max_transfer_sz = DISP_WIDTH * 20 * 2 + 8;
 
     spi_device_interface_config_t devcfg = {};
-    devcfg.clock_speed_hz = 40 * 1000 * 1000; // 40 MHz SPI
+    devcfg.clock_speed_hz = 40 * 1000 * 1000;
     devcfg.mode = 0;
     devcfg.spics_io_num = PIN_NUM_CS;
     devcfg.queue_size = 7;
-    devcfg.flags = SPI_DEVICE_HALFDUPLEX; // MATCHES ORIGINAL PORT (Ensures reliable CS behavior)
+    devcfg.flags = SPI_DEVICE_HALFDUPLEX;
 
     ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO));
     ESP_ERROR_CHECK(spi_bus_add_device(SPI2_HOST, &devcfg, &spi_handle_));
 
     reset();
 
-    // 1.54" ST7789 Initialization Sequence
-    send_cmd(0x3A); // Color mode
-    uint8_t color_mode = 0x05; // 16-bit
+    // ST7789 Initialization Sequence
+    send_cmd(0x3A);
+    uint8_t color_mode = 0x05;
     send_data(&color_mode, 1);
 
-    send_cmd(0xB2); // Porch Control
+    send_cmd(0xB2);
     uint8_t porctrl[] = {0x0C, 0x0C, 0x00, 0x33, 0x33};
     send_data(porctrl, 5);
 
-    send_cmd(0xB7); // Gate Control
+    send_cmd(0xB7);
     uint8_t gctrl = 0x35;
     send_data(&gctrl, 1);
 
-    send_cmd(0xBB); // VCOM
+    send_cmd(0xBB);
     uint8_t vcoms = 0x32;
     send_data(&vcoms, 1);
 
-    send_cmd(0xC2); // VDV & VRH Cmd Enable
+    send_cmd(0xC2);
     uint8_t vdvvrhen = 0x01;
     send_data(&vdvvrhen, 1);
 
-    send_cmd(0xC3); // VRH Set
+    send_cmd(0xC3);
     uint8_t vrh = 0x15;
     send_data(&vrh, 1);
 
-    send_cmd(0xC4); // VDV Set
+    send_cmd(0xC4);
     uint8_t vdvs = 0x20;
     send_data(&vdvs, 1);
 
-    send_cmd(0xC6); // Frame Rate Control
+    send_cmd(0xC6);
     uint8_t frctrl2 = 0x0F;
     send_data(&frctrl2, 1);
 
-    send_cmd(0xD0); // Power Control
+    send_cmd(0xD0);
     uint8_t pwctrl1[] = {0xA4, 0xA1};
     send_data(pwctrl1, 2);
 
-    send_cmd(0xE0); // Positive Voltage Gamma
+    send_cmd(0xE0);
     uint8_t pvgamctrl[] = {0xD0, 0x08, 0x0E, 0x09, 0x09, 0x05, 0x31, 0x33, 0x48, 0x17, 0x14, 0x15, 0x31, 0x34};
     send_data(pvgamctrl, 14);
 
-    send_cmd(0xE1); // Negative Voltage Gamma
+    send_cmd(0xE1);
     uint8_t nvgamctrl[] = {0xD0, 0x08, 0x0E, 0x09, 0x09, 0x15, 0x31, 0x33, 0x48, 0x17, 0x14, 0x15, 0x31, 0x34};
     send_data(nvgamctrl, 14);
 
-    send_cmd(0x36); // Memory Data Access Control
-    uint8_t madctl = 0x00; 
+    send_cmd(0x36);
+    uint8_t madctl = 0x00;
     send_data(&madctl, 1);
 
-    send_cmd(0x21); // Inversion ON (Required for many IPS ST7789 panels)
-    send_cmd(0x11); // Sleep Out
+    send_cmd(0x21);
+    send_cmd(0x11);
     vTaskDelay(pdMS_TO_TICKS(120));
 
-    send_cmd(0x29); // Display ON
+    send_cmd(0x29);
     vTaskDelay(pdMS_TO_TICKS(20));
 }
 
@@ -250,7 +248,6 @@ void LCD::fill_screen(uint16_t color) {
     uint16_t* buffer = (uint16_t*)heap_caps_malloc(chunk_pixels * 2, MALLOC_CAP_DMA);
     if (!buffer) return;
 
-    // Byte swap for ESP32 little-endian SPI
     uint16_t swapped_color = (color >> 8) | (color << 8);
     for (int i = 0; i < chunk_pixels; i++) {
         buffer[i] = swapped_color;
@@ -280,7 +277,6 @@ void LCD::draw_char(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg_co
     int draw_w = 8 * scale;
     int draw_h = 16 * scale;
 
-    // Bounds check to avoid writing outside screen
     if (x >= DISP_WIDTH || y >= DISP_HEIGHT) return;
     if (x + draw_w > DISP_WIDTH) draw_w = DISP_WIDTH - x;
     if (y + draw_h > DISP_HEIGHT) draw_h = DISP_HEIGHT - y;
@@ -294,31 +290,38 @@ void LCD::draw_char(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg_co
     uint16_t b_color = (bg_color >> 8) | (bg_color << 8);
 
     const uint8_t* glyph = asc2_1608[c - ' '];
-    int idx = 0;
-
-    // Rendering Logic fixed to properly extract Column-Major font data 
-    // (This prevents the "sliced" diagonal artifacts)
-    for (int i = 0; i < draw_h; i++) {
-        int orig_y = i / scale;
-        for (int j = 0; j < draw_w; j++) {
-            int orig_x = j / scale;
+    
+    // Corrected logic for Column-Major Font Data
+    for (int col = 0; col < 8; col++) {
+        uint16_t col_data = (glyph[col * 2] << 8) | glyph[col * 2 + 1];
+        for (int row = 0; row < 16; row++) {
+            bool pixel_on = (col_data >> (15 - row)) & 1;
+            uint16_t pixel_color = pixel_on ? f_color : b_color;
             
-            // The Font array stores 2 bytes for every column (total 8 columns).
-            // orig_y < 8 reads the first byte, orig_y >= 8 reads the second byte.
-            uint8_t byte_val = glyph[orig_x * 2 + (orig_y >= 8 ? 1 : 0)];
-            bool pixel_on = byte_val & (0x80 >> (orig_y % 8));
-            
-            if (pixel_on) {
-                buffer[idx++] = f_color;
+            if (scale > 1) {
+                // Render scaled pixel block
+                for (int sx = 0; sx < scale; sx++) {
+                    for (int sy = 0; sy < scale; sy++) {
+                        int buf_x = (col * scale) + sx;
+                        int buf_y = (row * scale) + sy;
+                        if (buf_x < draw_w && buf_y < draw_h) {
+                           buffer[buf_y * draw_w + buf_x] = pixel_color;
+                        }
+                    }
+                }
             } else {
-                buffer[idx++] = b_color;
+                // Render 1x1 pixel
+                if (col < draw_w && row < draw_h) {
+                   buffer[row * draw_w + col] = pixel_color;
+                }
             }
         }
     }
     
-    send_data((uint8_t*)buffer, idx * 2);
+    send_data((uint8_t*)buffer, draw_w * draw_h * 2);
     heap_caps_free(buffer);
 }
+
 
 void LCD::draw_string(int16_t x, int16_t y, const char* str, uint16_t color, uint16_t bg_color, uint8_t scale) {
     if (scale == 0) scale = 1;
@@ -333,7 +336,6 @@ void LCD::draw_string(int16_t x, int16_t y, const char* str, uint16_t color, uin
             draw_char(curr_x, curr_y, *str, color, bg_color, scale);
             curr_x += 8 * scale;
             
-            // Auto wrap text to the next line
             if (curr_x + (8 * scale) > DISP_WIDTH) {
                 curr_x = x;
                 curr_y += 16 * scale;
