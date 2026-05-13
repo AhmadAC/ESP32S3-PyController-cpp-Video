@@ -1,4 +1,3 @@
-// src/main.cpp
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
@@ -73,7 +72,7 @@ void onVideoFrame(uint8_t *buffer, size_t length) {
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
-            // FIX: Changed getPixel to readPixel to resolve compiler error
+            // FIX: readPixel instead of getPixel (TFT_eSPI API)
             tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); 
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
@@ -102,7 +101,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
             Serial.println("Paired to Peer!");
         }
     } 
-    // 2. Telemetry Parsing Logic for PyCar
+    // 2. Telemetry Parsing Logic
     else if (len > 3 && data[0] == 'D' && data[1] == ':') {
         char msg[64];
         int cpyLen = len < 63 ? len : 63;
@@ -146,8 +145,8 @@ uint8_t getSystemButtons() {
 }
 
 uint8_t getAnalog(int channel) {
-    int val = analogRead(channel);
-    return val / 16; 
+    int val = analogRead(channel); // Reads ADC channel directly
+    return val / 16; // Map 12-bit (4095) down to 8-bit (255)
 }
 
 void setup() {
@@ -163,8 +162,8 @@ void setup() {
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting Controller...", 20, 110, 4);
-    
-    // Initialize RAW WiFi Communication internally
+
+    // IMPORTANT: radio.init handles WiFi setup. Do not call WiFi.mode() separately.
     radio.init(512); 
     radio.setChannel(1);
 
@@ -181,7 +180,7 @@ void setup() {
     
     esp_now_register_recv_cb(onDataRecv);
 
-    // FIX: Changed setReceiveCallback to setRecvCallback to resolve compiler error
+    // FIX: setRecvCallback instead of setReceiveCallback
     radio.setRecvCallback(onVideoFrame);
 
     tft.fillScreen(TFT_WHITE);
@@ -205,7 +204,8 @@ void loop() {
             uint8_t rx = getAnalog(ADC_JOY_RX);
             uint8_t ry = 255 - getAnalog(ADC_JOY_RY); 
             uint8_t byte5 = getDPadAndButtons();
-            
+            uint8_t byte6 = getSystemButtons();
+
             uint8_t payload[6] = {67, lx, ly, rx, ry, byte5};
             esp_now_send(peerMac, payload, 6);
             
