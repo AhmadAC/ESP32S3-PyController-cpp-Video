@@ -35,6 +35,9 @@ JPEGDEC jpeg;
 WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
+// FIXED: Define a global buffer for the received video data
+uint8_t video_buffer[65536];
+
 // --- State Management ---
 enum State { SEARCHING, CONNECTED };
 State currentState = SEARCHING;
@@ -59,10 +62,8 @@ int JPEGDraw(JPEGDRAW *pDraw) {
 void onVideoFrame(size_t length) {
     if (currentState != CONNECTED) return;
     
-    // FIXED: In version 0.2.1, use the public pointer 'fb' directly
-    uint8_t *buffer = radio.fb;
-    
-    if (buffer != nullptr && jpeg.openRAM(buffer, length, JPEGDraw)) {
+    // FIXED: Use the global video_buffer
+    if (jpeg.openRAM(video_buffer, length, JPEGDraw)) {
         jpeg.setPixelType(RGB565_BIG_ENDIAN); 
         jpeg.decode(0, 0, 0);                 
         jpeg.close();
@@ -74,7 +75,7 @@ void onVideoFrame(size_t length) {
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
-            // FIXED: Using readPixel
+            // FIXED: readPixel
             tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); 
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
@@ -98,7 +99,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     } 
     else if (len > 3 && data[0] == 'D' && data[1] == ':') {
         char msg[64];
-        int cpyLen = len < 63 ? len : 63;
+        int cpyLen = (len < 63) ? len : 63;
         memcpy(msg, data, cpyLen);
         msg[cpyLen] = '\0';
         char* d_ptr = strstr(msg, "D:");
@@ -133,21 +134,28 @@ void setup() {
     Serial.begin(115200);
     const int buttons[] = {BTN_START, BTN_BACK, BTN_A_OK, BTN_B_OK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
     for (int pin : buttons) pinMode(pin, INPUT_PULLUP);
+    
     tft.init();
     tft.setRotation(0); 
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting Controller...", 20, 110, 4);
+    
+    // FIXED: Must register the buffer before calling init
+    radio.setRecvBuffer(video_buffer);
+    radio.setRecvCallback(onVideoFrame);
     radio.init(512); 
     radio.setChannel(1);
+
     if (esp_now_init() != ESP_OK) return;
+    
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, broadcastMac, 6);
     peerInfo.channel = 1;
     peerInfo.encrypt = false;
     esp_now_add_peer(&peerInfo);
     esp_now_register_recv_cb(onDataRecv);
-    radio.setRecvCallback(onVideoFrame);
+
     tft.fillScreen(TFT_WHITE);
     tft.drawString("Searching PyCar/PyCam...", 10, 110, 2);
 }
