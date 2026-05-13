@@ -7,28 +7,20 @@
 #include <WiFiRawComm.h>
 #include <ESPNowCam.h>
 
-// --- Pin Definitions (Verified from Schematic) ---
-#define BTN_UP    10
-#define BTN_DOWN  11
-#define BTN_LEFT  12
-#define BTN_RIGHT 13
-#define BTN_Y     15
-#define BTN_X     14
-#define BTN_B     21
-#define BTN_A     16
-#define ADC_JOY_LX 4 
-#define ADC_JOY_LY 5 
-#define ADC_JOY_RX 7 
-#define ADC_JOY_RY 8 
+// --- Pins ---
+#define BTN_UP 10
+#define BTN_DOWN 11
+#define ADC_JOY_LX 4
+#define ADC_JOY_LY 5
 
-// --- Objects ---
+// --- Global Objects ---
 TFT_eSPI tft = TFT_eSPI();
 JPEGDEC jpeg;
 WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
-// --- Memory Buffer (Reduced for No-PSRAM Stability) ---
-#define FRAME_BUFFER_SIZE 20480 
+// Small buffer for No-PSRAM stability
+#define FRAME_BUFFER_SIZE 16384 
 uint8_t frame_buffer[FRAME_BUFFER_SIZE]; 
 
 volatile bool hasNewFrame = false;
@@ -39,15 +31,9 @@ State currentState = SEARCHING;
 uint8_t carMac[6];
 const uint8_t broadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-float currentDist = 0.0;
-unsigned long lastDiscoveryTime = 0;
-unsigned long lastJoystickTime = 0;
-
-// JPEG Drawing Callback (Standard for TFT_eSPI)
+// JPEG Drawing Callback
 int JPEGDraw(JPEGDRAW *pDraw) {
-    if (pDraw->pPixels) {
-        tft.pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
-    }
+    if (pDraw->pPixels) tft.pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
     return 1;
 }
 
@@ -60,125 +46,80 @@ void onVideoFrame(uint32_t length) {
     }
 }
 
-// Data Packet Callback (Pairing & Telemetry)
+// Data Packet Callback
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
-    if (!data || len <= 0) return;
-
-    // Detect Pairing Handshake
     if (currentState == SEARCHING && len >= 9 && memcmp(data, "pyCAR_ACK", 9) == 0) {
         memcpy(carMac, mac, 6);
         currentState = CONNECTED;
-        
-        // Add specific car to ESP-NOW peers
-        esp_now_peer_info_t peer = {};
-        memcpy(peer.peer_addr, carMac, 6);
-        peer.channel = 1;
-        peer.encrypt = false;
-        if (!esp_now_is_peer_exist(carMac)) esp_now_add_peer(&peer);
-        
-        tft.fillScreen(TFT_BLACK);
-    }
-    // Detect Telemetry
-    else if (currentState == CONNECTED && len > 2 && data[0] == 'D' && data[1] == ':') {
-        char msg[32];
-        int cpyLen = (len < 31) ? len : 31;
-        memcpy(msg, data, cpyLen);
-        msg[cpyLen] = '\0';
-        char* d_ptr = strstr(msg, "D:");
-        if (d_ptr) currentDist = atof(d_ptr + 2);
     }
 }
 
 void setup() {
-    // 1. Initial Stability Delay
-    delay(2000); 
     Serial.begin(115200);
-    Serial.println("pyController S3 Booting...");
+    delay(2000); 
+    Serial.println("\n[1/4] Starting Display...");
 
-    // 2. Setup Input Pins
-    const int buttons[] = {BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
-    for (int p : buttons) pinMode(p, INPUT_PULLUP);
-
-    // 3. Setup Display
+    // Initialize Screen Only
     tft.init();
     tft.setRotation(0);
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
-    tft.drawString("Status: Searching...", 10, 110, 2);
+    tft.drawString("pyController S3", 10, 10, 2);
+    tft.drawString("Status: Hardware OK", 10, 30, 2);
+    tft.drawString("Starting WiFi in 3s...", 10, 50, 2);
 
-    // 4. WiFi & Radio Setup (Clean order)
+    // Wait to let memory settle
+    delay(3000);
+    Serial.println("[2/4] Initializing WiFi...");
     WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-    
+
     if (esp_now_init() != ESP_OK) {
-        Serial.println("ESP-NOW Init Failed");
+        Serial.println("ESP-NOW Fail");
         return;
     }
-
-    // Register callback for non-video data
     esp_now_register_recv_cb(onDataRecv);
 
-    // 5. Initialize Broadcast Peer
+    Serial.println("[3/4] Setting up Radio...");
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, broadcastMac, 6);
     peer.channel = 1;
     peer.encrypt = false;
     esp_now_add_peer(&peer);
 
-    // 6. Initialize Video Stream Handler
+    Serial.println("[4/4] Starting Video Engine...");
     radio.setRecvBuffer(frame_buffer);
     radio.setRecvCallback(onVideoFrame);
-    radio.init(160); // 160px width mode (Fastest for ESP-NOW)
+    
+    // Low-res init for memory safety
+    radio.init(160); 
 
-    Serial.println("Init Complete.");
+    Serial.println("BOOT COMPLETE - NO CRASH");
+    tft.fillScreen(TFT_BLACK);
 }
 
 void loop() {
     unsigned long now = millis();
+    static unsigned long lastSearch = 0;
 
-    // Handle Video Frame Processing
     if (hasNewFrame) {
-        // Double check for valid JPEG SOI marker to prevent crash
+        // Valid JPEG header check
         if (latestFrameLength > 4 && frame_buffer[0] == 0xFF && frame_buffer[1] == 0xD8) {
             if (jpeg.openRAM(frame_buffer, latestFrameLength, JPEGDraw)) {
                 jpeg.setPixelType(RGB565_BIG_ENDIAN);
                 jpeg.decode(0, 0, 0);
                 jpeg.close();
-
-                // Draw Telemetry Overlay
-                tft.setTextColor(TFT_GREEN, TFT_BLACK);
-                tft.drawString("Dist: " + String(currentDist, 1) + "cm", 5, 220, 2);
             }
         }
-        hasNewFrame = false; 
+        hasNewFrame = false;
     }
 
-    // State Tasks
-    if (currentState == SEARCHING) {
-        if (now - lastDiscoveryTime > 1000) {
-            esp_now_send(broadcastMac, (uint8_t*)"pyCAR_DISCOVER", 14);
-            lastDiscoveryTime = now;
-            Serial.println("Searching...");
-        }
-    }
-    else if (currentState == CONNECTED) {
-        if (now - lastJoystickTime > 50) {
-            // Read JoySticks (scaled to 0-255)
-            uint8_t lx = analogRead(ADC_JOY_LX) / 16;
-            uint8_t ly = 255 - (analogRead(ADC_JOY_LY) / 16);
-            uint8_t rx = analogRead(ADC_JOY_RX) / 16;
-            uint8_t ry = 255 - (analogRead(ADC_JOY_RY) / 16);
-
-            // Read Buttons
-            uint8_t buttons = 8; // Neutral D-Pad
-            if (!digitalRead(BTN_UP)) buttons = 0;
-            else if (!digitalRead(BTN_DOWN)) buttons = 4;
-            if (!digitalRead(BTN_Y)) buttons |= (1 << 4);
-            if (!digitalRead(BTN_A)) buttons |= (1 << 6);
-
-            uint8_t payload[6] = {67, lx, ly, rx, ry, buttons};
-            esp_now_send(carMac, payload, 6);
-            lastJoystickTime = now;
-        }
+    if (currentState == SEARCHING && now - lastSearch > 1000) {
+        esp_now_send(broadcastMac, (uint8_t*)"pyCAR_DISCOVER", 14);
+        lastSearch = now;
+        Serial.println("Searching for Car...");
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.drawString("Searching for Car...", 10, 110, 2);
     }
 }
