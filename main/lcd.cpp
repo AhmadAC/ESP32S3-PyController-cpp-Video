@@ -3,7 +3,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include <cstring>
+#include <stdio.h>
+#include "tjpgd.h"
 
 // PyController Pin Mapping
 #define PIN_NUM_MISO GPIO_NUM_NC
@@ -112,8 +115,35 @@ static const unsigned char asc2_1608[95][16] = {
     {0x00,0x00,0x60,0x00,0x80,0x00,0x80,0x00,0x40,0x00,0x40,0x00,0x20,0x00,0x20,0x00} /*"~",94*/
 };
 
-LCD::LCD() : spi_handle_(nullptr) {
+// ----------------------------------------------------
+// JPG Helper structs & callbacks
+// ----------------------------------------------------
+struct JpegDev {
+    FILE* fp;
+    LCD* lcd;
+    int x_off;
+    int y_off;
+};
+
+static unsigned int tjd_input(JDEC* jd, uint8_t* buff, unsigned int nd) {
+    JpegDev* dev = (JpegDev*)jd->device;
+    if (buff) {
+        return fread(buff, 1, nd, dev->fp);
+    } else {
+        fseek(dev->fp, nd, SEEK_CUR);
+        return nd;
+    }
 }
+
+static unsigned int tjd_output(JDEC* jd, void* bitmap, JRECT* rect) {
+    JpegDev* dev = (JpegDev*)jd->device;
+    uint16_t w = rect->right - rect->left + 1;
+    uint16_t h = rect->bottom - rect->top + 1;
+    dev->lcd->draw_bitmap(dev->x_off + rect->left, dev->y_off + rect->top, w, h, (const uint16_t*)bitmap);
+    return 1;
+}
+
+LCD::LCD() : spi_handle_(nullptr) {}
 
 void LCD::reset() {
     gpio_set_level(PIN_NUM_RST, 0);
@@ -145,15 +175,15 @@ void LCD::set_address_window(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2)
     y1 += Y_OFFSET;
     y2 += Y_OFFSET;
 
-    send_cmd(0x2A); // Column Address Set
+    send_cmd(0x2A);
     uint8_t caset[4] = { (uint8_t)(x1 >> 8), (uint8_t)(x1 & 0xFF), (uint8_t)(x2 >> 8), (uint8_t)(x2 & 0xFF) };
     send_data(caset, 4);
 
-    send_cmd(0x2B); // Row Address Set
+    send_cmd(0x2B);
     uint8_t raset[4] = { (uint8_t)(y1 >> 8), (uint8_t)(y1 & 0xFF), (uint8_t)(y2 >> 8), (uint8_t)(y2 & 0xFF) };
     send_data(raset, 4);
 
-    send_cmd(0x2C); // Memory Write
+    send_cmd(0x2C);
 }
 
 void LCD::init() {
@@ -291,7 +321,6 @@ void LCD::draw_char(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg_co
 
     const uint8_t* glyph = asc2_1608[c - ' '];
     
-    // Corrected logic for Column-Major Font Data
     for (int col = 0; col < 8; col++) {
         uint16_t col_data = (glyph[col * 2] << 8) | glyph[col * 2 + 1];
         for (int row = 0; row < 16; row++) {
@@ -299,7 +328,6 @@ void LCD::draw_char(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg_co
             uint16_t pixel_color = pixel_on ? f_color : b_color;
             
             if (scale > 1) {
-                // Render scaled pixel block
                 for (int sx = 0; sx < scale; sx++) {
                     for (int sy = 0; sy < scale; sy++) {
                         int buf_x = (col * scale) + sx;
@@ -310,7 +338,6 @@ void LCD::draw_char(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg_co
                     }
                 }
             } else {
-                // Render 1x1 pixel
                 if (col < draw_w && row < draw_h) {
                    buffer[row * draw_w + col] = pixel_color;
                 }
@@ -321,7 +348,6 @@ void LCD::draw_char(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg_co
     send_data((uint8_t*)buffer, draw_w * draw_h * 2);
     heap_caps_free(buffer);
 }
-
 
 void LCD::draw_string(int16_t x, int16_t y, const char* str, uint16_t color, uint16_t bg_color, uint8_t scale) {
     if (scale == 0) scale = 1;
@@ -350,11 +376,36 @@ void LCD::draw_bitmap(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t
     set_address_window(x, y, x + w - 1, y + h - 1);
     
     int len = w * h * 2;
-    // Pushing the raw array chunk to a DMA-capable buffer prevents ESP-IDF SPI driver crashes
     uint8_t* buffer = (uint8_t*)heap_caps_malloc(len, MALLOC_CAP_DMA);
     if (buffer) {
-        memcpy(buffer, data, len);
+        // Swap bytes because ESP32 is little-endian and ST7789 expects big-endian over SPI
+        for (int i = 0; i < w * h; i++) {
+            buffer[i * 2] = data[i] >> 8;
+            buffer[i * 2 + 1] = data[i] & 0xFF;
+        }
         send_data(buffer, len);
         heap_caps_free(buffer);
     }
+}
+
+void LCD::draw_jpg(const char* filename, int x, int y) {
+    FILE* f = fopen(filename, "rb");
+    if (!f) {
+        ESP_LOGE("LCD", "Failed to open JPG: %s", filename);
+        return;
+    }
+    JpegDev dev = {f, this, x, y};
+    JDEC jd;
+    
+    // Provide a sufficient working buffer for TJpgDec block decoding
+    uint8_t* workbuf = (uint8_t*)heap_caps_malloc(3100, MALLOC_CAP_8BIT);
+    if (workbuf) {
+        if (jd_prepare(&jd, tjd_input, workbuf, 3100, &dev) == JDR_OK) {
+            jd_decomp(&jd, tjd_output, 0); // 0 = standard scale, no shrinkage
+        } else {
+            ESP_LOGE("LCD", "JPEG Preparation Failed");
+        }
+        heap_caps_free(workbuf);
+    }
+    fclose(f);
 }

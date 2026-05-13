@@ -6,3 +6,6 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
 # Declare the project name.
 project(pycontroller_cpp)
+
+# (spiffs_create_partition_image removed so the build doesn't 
+# require the images or data folder to successfully build the firmware .bin)

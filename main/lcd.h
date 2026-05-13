@@ -18,12 +18,13 @@ public:
     void fill_screen(uint16_t color);
     void draw_pixel(int16_t x, int16_t y, uint16_t color);
     
-    // Added text rendering functions
+    // Text rendering functions
     void draw_char(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg_color, uint8_t scale = 1);
     void draw_string(int16_t x, int16_t y, const char* str, uint16_t color, uint16_t bg_color, uint8_t scale = 1);
 
-    // Added high-speed block rendering for the Camera image stream
+    // Advanced block & JPG rendering
     void draw_bitmap(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* data);
+    void draw_jpg(const char* filename, int x, int y);
 
 private:
     void send_cmd(uint8_t cmd);
