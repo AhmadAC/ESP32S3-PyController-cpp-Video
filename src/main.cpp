@@ -8,15 +8,21 @@
 #include <ESPNowCam.h>
 
 // --- pyController Hardware Pins ---
-#define LCD_BL      33
 #define BTN_UP      10
 #define BTN_DOWN    11
 #define BTN_LEFT    12
 #define BTN_RIGHT   13
 #define BTN_A       16
 #define BTN_B       21
+#define BTN_X       14
+#define BTN_Y       15
+#define BTN_START   0
+#define BTN_BACK    1
+
 #define POT_LX      4
 #define POT_LY      5
+#define POT_RX      7
+#define POT_RY      8
 
 // --- Global Objects ---
 TFT_eSPI tft = TFT_eSPI();
@@ -53,7 +59,7 @@ void onVideoFrame(uint32_t length) {
     }
 }
 
-// LEGACY SIGNATURE: Required for your current Arduino-ESP32 v2.x core
+// ESP-NOW Data Callback (ESP32 Arduino Core v2.x signature)
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     if (currentState == SEARCHING && len >= 9 && memcmp(data, "pyCAR_ACK", 9) == 0) {
         memcpy(carMac, mac, 6);
@@ -62,30 +68,67 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     }
 }
 
+// Encode gamepad buttons into a single byte matching original pyController protocol
+uint8_t encodeButtons() {
+    bool up = !digitalRead(BTN_UP);
+    bool down = !digitalRead(BTN_DOWN);
+    bool left = !digitalRead(BTN_LEFT);
+    bool right = !digitalRead(BTN_RIGHT);
+
+    uint8_t dpad = 8; // Idle
+    if (up && right) dpad = 1;
+    else if (right && down) dpad = 3;
+    else if (down && left) dpad = 5;
+    else if (left && up) dpad = 7;
+    else if (up) dpad = 0;
+    else if (right) dpad = 2;
+    else if (down) dpad = 4;
+    else if (left) dpad = 6;
+
+    uint8_t btns = dpad;
+    
+    // Action Buttons
+    if (!digitalRead(BTN_A)) btns |= (1 << 6);
+    if (!digitalRead(BTN_B)) btns |= (1 << 5);
+    if (!digitalRead(BTN_X)) btns |= (1 << 7);
+    if (!digitalRead(BTN_Y)) btns |= (1 << 4);
+
+    return btns;
+}
+
 void setup() {
     Serial.begin(115200);
-    
-    // LCD Backlight setup
-    pinMode(LCD_BL, OUTPUT);
-    digitalWrite(LCD_BL, HIGH);
 
-    // Inputs setup
+    // Initialize Input Pins
     pinMode(BTN_UP, INPUT_PULLUP);
     pinMode(BTN_DOWN, INPUT_PULLUP);
+    pinMode(BTN_LEFT, INPUT_PULLUP);
+    pinMode(BTN_RIGHT, INPUT_PULLUP);
     pinMode(BTN_A, INPUT_PULLUP);
     pinMode(BTN_B, INPUT_PULLUP);
+    pinMode(BTN_X, INPUT_PULLUP);
+    pinMode(BTN_Y, INPUT_PULLUP);
+    pinMode(BTN_START, INPUT_PULLUP);
+    pinMode(BTN_BACK, INPUT_PULLUP);
+
+    // Set analog resolution to match expected 0-4095 range for mapping
+    analogReadResolution(12);
 
     Serial.println("\n[1/4] Starting Display...");
     tft.init();
     tft.setRotation(0);
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    
+    // Draw initial text (requires LOAD_FONT2 in platformio.ini)
     tft.drawCentreString("PYCONTROLLER S3", 120, 10, 2);
     tft.drawCentreString("Initializing WiFi...", 120, 40, 2);
 
     Serial.println("[2/4] Initializing WiFi...");
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
+    
+    // Force ESP-NOW communication channel
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
     
     if (esp_now_init() != ESP_OK) {
@@ -104,7 +147,9 @@ void setup() {
     Serial.println("[4/4] Starting Video Engine...");
     radio.setRecvBuffer(frame_buffer);
     radio.setRecvCallback(onVideoFrame);
-    radio.init(160); // Init at 160px width for stability on No-PSRAM board
+    
+    // Init video at 160px width mode
+    radio.init(160); 
 
     Serial.println("BOOT COMPLETE");
     tft.fillScreen(TFT_BLACK);
@@ -117,6 +162,7 @@ void loop() {
 
     // 1. Process Received Video Frames
     if (hasNewFrame) {
+        // Double check JPEG Start of Image (SOI) marker to prevent crash
         if (latestFrameLength > 4 && frame_buffer[0] == 0xFF && frame_buffer[1] == 0xD8) {
             if (jpeg.openRAM(frame_buffer, latestFrameLength, JPEGDraw)) {
                 jpeg.setPixelType(RGB565_BIG_ENDIAN);
@@ -140,15 +186,15 @@ void loop() {
         if (now - lastGamepad > 50) {
             uint8_t lx = map(analogRead(POT_LX), 0, 4095, 0, 255);
             uint8_t ly = map(analogRead(POT_LY), 0, 4095, 0, 255);
+            uint8_t rx = map(analogRead(POT_RX), 0, 4095, 0, 255);
+            uint8_t ry = map(analogRead(POT_RY), 0, 4095, 0, 255);
             
-            // Basic button bitmask (A=bit 4, B=bit 5)
-            uint8_t buttons = 0;
-            if (digitalRead(BTN_A) == LOW) buttons |= 0x10; 
-            if (digitalRead(BTN_B) == LOW) buttons |= 0x20;
+            uint8_t buttons = encodeButtons();
             
-            // Standard controller packet
-            uint8_t pkt[6] = { 67, lx, ly, 128, 128, buttons };
+            // Magic packet header 'C' (67)
+            uint8_t pkt[6] = { 67, lx, ly, rx, ry, buttons };
             esp_now_send(carMac, pkt, 6);
+            
             lastGamepad = now;
         }
     }
