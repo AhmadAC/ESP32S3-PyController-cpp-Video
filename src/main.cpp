@@ -34,9 +34,8 @@ WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
 // --- Video Buffer & Flags ---
-// Reduced buffer size to 20KB to leave more free RAM for the JPEG decoder library.
-const int FRAME_BUFFER_SIZE = 20480; 
-uint8_t *frame_buffer = nullptr; // Will be allocated on the heap
+const int FRAME_BUFFER_SIZE = 20480; // 20KB
+uint8_t *frame_buffer = nullptr;
 
 volatile bool hasNewFrame = false;
 volatile uint32_t latestFrameLength = 0;
@@ -44,7 +43,7 @@ volatile uint32_t latestFrameLength = 0;
 // --- State Management ---
 enum State { SEARCHING, CONNECTED };
 State currentState = SEARCHING;
-volatile bool pairedFlag = false; // Flag to handle UI change in loop
+volatile bool pairedFlag = false;
 uint8_t carMac[6];
 const uint8_t broadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -58,30 +57,23 @@ unsigned long lastJoystickTime = 0;
 
 // === JPEG Drawing Callback ===
 int JPEGDraw(JPEGDRAW *pDraw) {
-    // This function is called by the JPEG decoder with chunks of the decoded image.
     tft.pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
-    return 1; // Continue decoding
+    return 1;
 }
 
 // === Video Callback (SIGNAL ONLY) ===
-// This is called from the ESP-NOW context, so it must be very fast.
-// It just copies the frame length and sets a flag for the main loop to handle.
 void onVideoFrame(uint32_t length) {
     if (currentState != CONNECTED || hasNewFrame) return;
-    if (length > FRAME_BUFFER_SIZE) {
-        // Frame is too large for our buffer, ignore it.
-        return;
-    }
+    if (length > FRAME_BUFFER_SIZE) return;
     latestFrameLength = length;
     hasNewFrame = true;
 }
 
 // === ESP-NOW Data Callback (SIGNAL ONLY) ===
-// Also called from the ESP-NOW context, must be fast.
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     if (currentState == SEARCHING && len >= 9 && strncmp((const char*)data, "pyCAR_ACK", 9) == 0) {
         memcpy(carMac, mac, 6);
-        pairedFlag = true; // Signal main loop to handle the pairing transition
+        pairedFlag = true;
     }
     else if (currentState == CONNECTED && len > 3 && data[0] == 'D' && data[1] == ':') {
         char msg[64];
@@ -96,19 +88,17 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
 }
 
 uint8_t getDPadAndButtons() {
-    uint8_t keyByte5 = 8; // Neutral state
+    uint8_t keyByte5 = 8;
     bool up = !digitalRead(BTN_UP);
     bool down = !digitalRead(BTN_DOWN);
     bool left = !digitalRead(BTN_LEFT);
     bool right = !digitalRead(BTN_RIGHT);
 
-    // D-Pad state logic
     if (up) keyByte5 = (right) ? 1 : (left) ? 7 : 0;
     else if (down) keyByte5 = (right) ? 3 : (left) ? 5 : 4;
     else if (right) keyByte5 = 2;
     else if (left) keyByte5 = 6;
 
-    // Button states
     if (!digitalRead(BTN_Y)) keyByte5 |= (1 << 4);
     if (!digitalRead(BTN_B)) keyByte5 |= (1 << 5);
     if (!digitalRead(BTN_A)) keyByte5 |= (1 << 6);
@@ -117,7 +107,6 @@ uint8_t getDPadAndButtons() {
 }
 
 uint8_t getAnalog(int channel) {
-    // Reads ADC and maps the ~0-4095 range to 0-255
     return analogRead(channel) / 16;
 }
 
@@ -133,9 +122,14 @@ void setup() {
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting...", 10, 10, 2);
 
+    // ====================================================================================
+    //  CRITICAL FIX #3: Configure JPEG decoder for minimal memory usage.
+    //  This forces it to process the image in the smallest possible chunks.
+    // ====================================================================================
+    jpeg.setMaxOutputSize(1);
+
     Serial.printf("Initial Free Heap: %d bytes\n", ESP.getFreeHeap());
 
-    // Allocate frame buffer from DMA-capable memory
     frame_buffer = (uint8_t *)heap_caps_malloc(FRAME_BUFFER_SIZE, MALLOC_CAP_DMA);
 
     if (!frame_buffer) {
@@ -143,7 +137,7 @@ void setup() {
         tft.fillScreen(TFT_RED);
         tft.drawString("FATAL ERROR:", 10, 110, 2);
         tft.drawString("Out of memory!", 10, 130, 2);
-        while(1) delay(1000); // Halt execution
+        while(1) delay(1000);
     }
     Serial.printf("Free Heap after buffer alloc: %d bytes\n", ESP.getFreeHeap());
 
@@ -155,7 +149,6 @@ void setup() {
         return;
     }
 
-    // Register broadcast peer for discovery
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, broadcastMac, 6);
     peerInfo.channel = 1;
@@ -165,7 +158,7 @@ void setup() {
 
     radio.setRecvBuffer(frame_buffer);
     radio.setRecvCallback(onVideoFrame);
-    radio.init(240); // Standard ESP-NOW MTU size
+    radio.init(240);
 
     tft.drawString("Searching for Car...", 10, 110, 2);
 }
@@ -173,9 +166,8 @@ void setup() {
 void loop() {
     unsigned long now = millis();
 
-    // 1. Handle pairing transition (triggered by flag from callback)
     if (pairedFlag) {
-        pairedFlag = false; // Reset flag immediately
+        pairedFlag = false;
         esp_now_peer_info_t peerInfo = {};
         memcpy(peerInfo.peer_addr, carMac, 6);
         peerInfo.channel = 1;
@@ -188,23 +180,20 @@ void loop() {
         Serial.println("Paired with Car!");
     }
 
-    // 2. Process Video Frame if one has arrived
     if (hasNewFrame) {
-        hasNewFrame = false; // Reset flag immediately
+        hasNewFrame = false;
         if (currentState == CONNECTED) {
             if (jpeg.openRAM(frame_buffer, latestFrameLength, JPEGDraw)) {
                 jpeg.setPixelType(RGB565_BIG_ENDIAN);
                 jpeg.decode(0, 0, 0);
                 jpeg.close();
 
-                // Draw Telemetry Overlay
                 tft.setTextColor(TFT_GREEN, TFT_BLACK);
                 tft.drawString("Dist: " + String(currentDist, 1) + "cm", 5, 220, 2);
             }
         }
     }
 
-    // 3. Handle state-based actions (Discovery or Sending Controls)
     if (currentState == SEARCHING) {
         if (now - lastDiscoveryTime > 500) {
             esp_now_send(broadcastMac, (uint8_t*)"pyCAR_DISCOVER", 14);
@@ -214,11 +203,11 @@ void loop() {
     else if (currentState == CONNECTED) {
         if (now - lastJoystickTime > 50) {
             uint8_t payload[6] = {
-                67, // Header byte
+                67,
                 getAnalog(ADC_JOY_LX),
-                (uint8_t)(255 - getAnalog(ADC_JOY_LY)), // Invert Y-axis
+                (uint8_t)(255 - getAnalog(ADC_JOY_LY)),
                 getAnalog(ADC_JOY_RX),
-                (uint8_t)(255 - getAnalog(ADC_JOY_RY)), // Invert Y-axis
+                (uint8_t)(255 - getAnalog(ADC_JOY_RY)),
                 getDPadAndButtons()
             };
             esp_now_send(carMac, payload, sizeof(payload));
