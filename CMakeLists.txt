@@ -1,3 +1,6 @@
-cmake_minimum_required(VERSION 3.16)
-include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(pycontroller_cpp)
+idf_component_register(SRCS "main.cpp"
+                            "lcd.cpp"
+                            # "gamepad.cpp" 
+                            # "espnow_handler.cpp"
+                    INCLUDE_DIRS "."
+                    REQUIRES esp_wifi nvs_flash esp_adc esp_timer driver esp_netif esp_event freertos)

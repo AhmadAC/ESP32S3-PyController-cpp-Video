@@ -1,80 +1,48 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "lcd.hpp"
-#include "gamepad.hpp"
-#include "espnow_handler.hpp"
-#include <cstdio>
+#include "esp_log.h"
+#include "lcd.h"
 
-LCD lcd;
-Gamepad gamepad;
-EspNowHandler espnow;
-
-CarStatus latest_status = {0.0f, false, false};
-volatile bool status_updated = false;
-
-extern "C" void app_main() {
+extern "C" void app_main(void) {
+    ESP_LOGI("MAIN", "Initializing LCD...");
+    LCD lcd;
     lcd.init();
-    lcd.fill(WHITE);
-    lcd.printStr("Booting...", 10, 10, BLACK, WHITE, 2);
+    ESP_LOGI("MAIN", "LCD Initialized.");
 
-    gamepad.init();
-    espnow.init();
+    // --- Verification Test ---
+    lcd.fill_screen(COLOR_BLACK);
+    vTaskDelay(pdMS_TO_TICKS(500));
     
-    espnow.setStatusCallback([](const CarStatus& status) {
-        latest_status = status;
-        status_updated = true;
-    });
-
-    lcd.fill(WHITE);
-    lcd.printStr("Searching for pyCar...", 10, 100, BLACK, WHITE, 2);
-
-    while (!espnow.isConnected()) {
-        espnow.sendDiscover();
-        vTaskDelay(pdMS_TO_TICKS(100));
+    ESP_LOGI("MAIN", "Running color test...");
+    lcd.fill_screen(COLOR_RED);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    lcd.fill_screen(COLOR_GREEN);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    lcd.fill_screen(COLOR_BLUE);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    lcd.fill_screen(COLOR_BLACK);
+    
+    ESP_LOGI("MAIN", "Drawing test pixels...");
+    // Draw white border
+    for(int i = 0; i < 240; i++) {
+        lcd.draw_pixel(i, 0, COLOR_WHITE);
+        lcd.draw_pixel(i, 239, COLOR_WHITE);
+        lcd.draw_pixel(0, i, COLOR_WHITE);
+        lcd.draw_pixel(239, i, COLOR_WHITE);
     }
 
-    lcd.fill(WHITE);
-    lcd.printStr("Connected!", 10, 10, GREEN, WHITE, 2);
-    lcd.printStr("Ultrasonic:", 10, 160, BLACK, WHITE, 2);
-
-    uint32_t last_lcd_update = 0;
-    uint32_t last_tx_time = 0;
-    char dist_str[32] = "";
-
+    // Draw diagonal cross
+    for(int i = 0; i < 240; i++) {
+        lcd.draw_pixel(i, i, COLOR_YELLOW);
+        lcd.draw_pixel(239-i, i, COLOR_CYAN);
+    }
+    
+    ESP_LOGI("MAIN", "Test complete. LCD should be working.");
+    
     while (1) {
-        uint32_t now = pdTICKS_TO_MS(xTaskGetTickCount());
-
-        if (now - last_lcd_update >= 200) {
-            if (status_updated) {
-                status_updated = false;
-                
-                // Clear lingering texts securely without screen flickering
-                snprintf(dist_str, sizeof(dist_str), "%.2f cm      ", latest_status.distance);
-                lcd.printStr(dist_str, 10, 190, BLACK, WHITE, 2);
-
-                if (latest_status.line_follower) {
-                    lcd.fillCircle(220, 20, 10, BLACK);
-                } else {
-                    lcd.fillCircle(220, 20, 10, WHITE);
-                    lcd.drawCircle(220, 20, 10, BLACK);
-                }
-
-                if (latest_status.sync_state) {
-                    lcd.fillCircle(190, 20, 10, RED);
-                } else {
-                    lcd.fillCircle(190, 20, 10, WHITE);
-                    lcd.drawCircle(190, 20, 10, RED);
-                }
-            }
-            last_lcd_update = now;
-        }
-
-        if (now - last_tx_time >= 50) {
-            GamepadState state = gamepad.read();
-            espnow.sendGamepad(state.lx, state.ly, state.rx, state.ry, state.buttons);
-            last_tx_time = now;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(portMAX_DELAY);
     }
 }
