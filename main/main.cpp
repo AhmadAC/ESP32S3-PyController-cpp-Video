@@ -179,7 +179,7 @@ void setup() {
 
     // Start Raw Wi-Fi Video Receiver
     radio.init(512); 
-    // FIXED: Changed setReceiveCallback to setRecvCallback
+    // FIXED: Correct method name for library version 0.2.1
     radio.setRecvCallback(onVideoFrame);
 
     tft.fillScreen(TFT_WHITE);
