@@ -35,8 +35,8 @@ JPEGDEC jpeg;
 WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
-// FIXED: Define a global buffer for the received video data
-uint8_t video_buffer[65536];
+// FIXED: Define global buffer for the library
+uint8_t frame_buffer[65536];
 
 // --- State Management ---
 enum State { SEARCHING, CONNECTED };
@@ -59,11 +59,10 @@ int JPEGDraw(JPEGDRAW *pDraw) {
 }
 
 // === Raw Wi-Fi Video Frame Received Callback ===
-void onVideoFrame(size_t length) {
+void onVideoFrame(uint32_t length) {
     if (currentState != CONNECTED) return;
     
-    // FIXED: Use the global video_buffer
-    if (jpeg.openRAM(video_buffer, length, JPEGDraw)) {
+    if (jpeg.openRAM(frame_buffer, length, JPEGDraw)) {
         jpeg.setPixelType(RGB565_BIG_ENDIAN); 
         jpeg.decode(0, 0, 0);                 
         jpeg.close();
@@ -75,7 +74,6 @@ void onVideoFrame(size_t length) {
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
-            // FIXED: readPixel
             tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); 
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
@@ -134,15 +132,13 @@ void setup() {
     Serial.begin(115200);
     const int buttons[] = {BTN_START, BTN_BACK, BTN_A_OK, BTN_B_OK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
     for (int pin : buttons) pinMode(pin, INPUT_PULLUP);
-    
     tft.init();
     tft.setRotation(0); 
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting Controller...", 20, 110, 4);
     
-    // FIXED: Must register the buffer before calling init
-    radio.setRecvBuffer(video_buffer);
+    radio.setRecvBuffer(frame_buffer);
     radio.setRecvCallback(onVideoFrame);
     radio.init(512); 
     radio.setChannel(1);
