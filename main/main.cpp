@@ -59,10 +59,10 @@ int JPEGDraw(JPEGDRAW *pDraw) {
 void onVideoFrame(size_t length) {
     if (currentState != CONNECTED) return;
     
-    // FIXED: getBuffer() is the correct method for EspNowCam v0.2.1
-    uint8_t *buffer = radio.getBuffer();
+    // FIXED: In version 0.2.1, use the public pointer 'fb' directly
+    uint8_t *buffer = radio.fb;
     
-    if (jpeg.openRAM(buffer, length, JPEGDraw)) {
+    if (buffer != nullptr && jpeg.openRAM(buffer, length, JPEGDraw)) {
         jpeg.setPixelType(RGB565_BIG_ENDIAN); 
         jpeg.decode(0, 0, 0);                 
         jpeg.close();
@@ -74,7 +74,7 @@ void onVideoFrame(size_t length) {
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
-            // FIXED: readPixel
+            // FIXED: Using readPixel
             tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); 
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
