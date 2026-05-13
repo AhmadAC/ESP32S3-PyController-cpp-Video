@@ -59,8 +59,8 @@ int JPEGDraw(JPEGDRAW *pDraw) {
 void onVideoFrame(size_t length) {
     if (currentState != CONNECTED) return;
     
-    // FIXED: getFrame() is the correct method for EspNowCam v0.2.1
-    uint8_t *buffer = radio.getFrame();
+    // FIXED: getBuffer() is the correct method for EspNowCam v0.2.1
+    uint8_t *buffer = radio.getBuffer();
     
     if (jpeg.openRAM(buffer, length, JPEGDraw)) {
         jpeg.setPixelType(RGB565_BIG_ENDIAN); 
