@@ -1,5 +1,4 @@
 // main/main.cpp
-// Replicating logic for the main/ directory to ensure update script succeeds
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
@@ -30,9 +29,10 @@ JPEGDEC jpeg;
 WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
-uint8_t frame_buffer[65536];
+uint8_t frame_buffer[32768]; 
 volatile bool hasNewFrame = false;
 volatile uint32_t latestFrameLength = 0;
+volatile bool pairedFlag = false;
 
 enum State { SEARCHING, CONNECTED };
 State currentState = SEARCHING;
@@ -58,13 +58,7 @@ void onVideoFrame(uint32_t length) {
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     if (currentState == SEARCHING && len >= 9 && strncmp((const char*)data, "pyCAR_ACK", 9) == 0) {
         memcpy(carMac, mac, 6);
-        esp_now_peer_info_t peerInfo = {};
-        memcpy(peerInfo.peer_addr, carMac, 6);
-        peerInfo.channel = 1;
-        peerInfo.encrypt = false;
-        if (!esp_now_is_peer_exist(carMac)) esp_now_add_peer(&peerInfo);
-        currentState = CONNECTED;
-        tft.fillScreen(TFT_BLACK);
+        pairedFlag = true;
     } 
     else if (len > 3 && data[0] == 'D' && data[1] == ':') {
         char msg[64];
@@ -118,7 +112,16 @@ void setup() {
 
 void loop() {
     unsigned long now = millis();
-    if (hasNewFrame) {
+    if (pairedFlag) {
+        esp_now_peer_info_t peerInfo = {};
+        memcpy(peerInfo.peer_addr, carMac, 6);
+        peerInfo.channel = 1;
+        if (!esp_now_is_peer_exist(carMac)) esp_now_add_peer(&peerInfo);
+        currentState = CONNECTED;
+        tft.fillScreen(TFT_BLACK);
+        pairedFlag = false;
+    }
+    if (hasNewFrame && currentState == CONNECTED) {
         if (jpeg.openRAM(frame_buffer, latestFrameLength, JPEGDraw)) {
             jpeg.setPixelType(RGB565_BIG_ENDIAN); 
             jpeg.decode(0, 0, 0);                 
