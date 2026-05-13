@@ -1,3 +1,4 @@
+// src/main.cpp
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
@@ -72,8 +73,8 @@ void onVideoFrame(uint8_t *buffer, size_t length) {
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
-            // Erase previous circle if it was filled
-            tft.fillCircle(220, 20, 10, tft.getPixel(220, 20)); // "Erase" by drawing background color
+            // FIXED: Changed getPixel to readPixel
+            tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); // "Erase" by drawing background color
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
     }
@@ -183,7 +184,8 @@ void setup() {
 
     // Start Raw Wi-Fi Video Receiver
     radio.init(512); // Standard chunk size
-    radio.setReceiveCallback(onVideoFrame);
+    // FIXED: Changed setReceiveCallback to setRecvCallback
+    radio.setRecvCallback(onVideoFrame);
 
     tft.fillScreen(TFT_WHITE);
     tft.drawString("Searching for Car...", 25, 110, 4);
@@ -210,9 +212,6 @@ void loop() {
             uint8_t byte5 = getDPadAndButtons();
             uint8_t byte6 = getSystemButtons();
 
-            // Your car expects a payload starting with 67, let's keep that format for now.
-            // Matching: struct.pack('<BBBBBB', 67, lx, ly, rx, ry, byte5)
-            // Note: Your python code was only sending byte5, so we will do the same.
             uint8_t payload[6] = {67, lx, ly, rx, ry, byte5};
             esp_now_send(carMac, payload, 6);
             
