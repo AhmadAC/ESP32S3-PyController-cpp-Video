@@ -1,3 +1,4 @@
+# .github\workflows\build-cpp.yml
 name: Build C++ Firmware
 
 on:
@@ -14,27 +15,24 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup ESP-IDF
-        uses: espressif/esp-idf-ci-action@v1
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          esp_idf_version: v5.3.1
-          target: esp32s3
-          command: |
-            # 1. Standard build
-            idf.py build
-            
-            # 2. Install esptool
-            pip install esptool
-            
-            # 3. Enter the build directory so the paths inside flash_args resolve correctly
-            cd build
-            
-            # 4. Run merge_bin using the auto-generated flash_args file
-            python -m esptool --chip esp32s3 merge_bin -o merged-pycontroller-s3.bin --fill-flash-size 4MB @flash_args
+          python-version: '3.10'
 
-      - name: Upload Firmware Artifact
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Build Firmware
+        run: pio run
+
+      - name: Upload Firmware Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pyController-S3-CPP-Merged
-          # Path remains build/ because we created the file inside the build folder in the previous step
-          path: build/merged-pycontroller-s3.bin
+          name: pyController-S3-Binaries
+          path: |
+            .pio/build/pyController_esp32s3/firmware.bin
+            .pio/build/pyController_esp32s3/bootloader.bin
+            .pio/build/pyController_esp32s3/partitions.bin
