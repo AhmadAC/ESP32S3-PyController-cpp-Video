@@ -163,7 +163,7 @@ void setup() {
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting Controller...", 20, 110, 4);
     
-    // radio.init handles all WiFi stack setup internally
+    // Initialize RAW WiFi Communication internally (handles netif)
     radio.init(512); 
     radio.setChannel(1);
 
