@@ -2,9 +2,9 @@ name: Build C++ Firmware
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main2, master ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main2, master ]
   workflow_dispatch: 
 
 jobs:
