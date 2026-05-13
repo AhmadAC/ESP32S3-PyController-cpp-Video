@@ -165,7 +165,6 @@ void setup() {
     tft.drawString("Booting Controller...", 20, 110, 4);
     
     // The ESPNowCam/WiFiRawComm library handles all WiFi initialization internally.
-    // Calling Arduino's WiFi.mode() here will cause a crash.
     radio.init(512); 
     radio.setChannel(1);
 
