@@ -13,7 +13,7 @@
 #define PIN_NUM_DC   GPIO_NUM_38
 #define PIN_NUM_RST  GPIO_NUM_42
 
-// Standard 8x16 ASCII Font Array (Copied from your Python version's C driver)
+// Standard 8x16 ASCII Font Array (Column-Major Format)
 static const unsigned char asc2_1608[95][16] = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},/*" ",0*/
     {0x00,0x00,0x00,0x00,0x00,0x00,0x1F,0xCC,0x00,0x0C,0x00,0x00,0x00,0x00,0x00,0x00},/*"!",1*/
@@ -106,10 +106,12 @@ static const unsigned char asc2_1608[95][16] = {
     {0x00,0x00,0x01,0x04,0x01,0x8C,0x00,0x74,0x01,0x70,0x01,0x8C,0x01,0x04,0x00,0x00},/*"x",88*/
     {0x01,0x01,0x01,0x81,0x01,0x71,0x00,0x0E,0x00,0x18,0x01,0x60,0x01,0x80,0x01,0x00},/*"y",89*/
     {0x00,0x00,0x01,0x84,0x01,0x0C,0x01,0x34,0x01,0x44,0x01,0x84,0x01,0x0C,0x00,0x00},/*"z",90*/
-    {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x3E,0xFC,0x40,0x02,0x40,0x02},/*"{",91*/
-    {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF,0xFF,0x00,0x00,0x00,0x00,0x00,0x00},/*"|",92*/
-    {0x00,0x00,0x40,0x02,0x40,0x02,0x3E,0xFC,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00},/*"}",93*/
-    {0x00,0x00,0x60,0x00,0x80,0x00,0x80,0x00,0x40,0x00,0x40,0x00,0x20,0x00,0x20,0x00} /*"~",94*/
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x7F,0xFE,0x40,0x02,0x40,0x02,0x40,0x02,0x00,0x00},/*"[",59*/
+    {0x00,0x00,0x30,0x00,0x0C,0x00,0x03,0x80,0x00,0x60,0x00,0x1C,0x00,0x03,0x00,0x00},/*"\",60*/
+    {0x00,0x00,0x40,0x02,0x40,0x02,0x40,0x02,0x7F,0xFE,0x00,0x00,0x00,0x00,0x00,0x00},/*"]",61*/
+    {0x00,0x00,0x00,0x00,0x20,0x00,0x40,0x00,0x40,0x00,0x40,0x00,0x20,0x00,0x00,0x00},/*"^",62*/
+    {0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x01,0x00,0x01},/*"_",63*/
+    {0x00,0x00,0x40,0x00,0x40,0x00,0x20,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},/*"`",64*/
 };
 
 LCD::LCD() : spi_handle_(nullptr) {
@@ -177,6 +179,7 @@ void LCD::init() {
     devcfg.mode = 0;
     devcfg.spics_io_num = PIN_NUM_CS;
     devcfg.queue_size = 7;
+    devcfg.flags = SPI_DEVICE_HALFDUPLEX; // MATCHES ORIGINAL PORT (Ensures reliable CS behavior)
 
     ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO));
     ESP_ERROR_CHECK(spi_bus_add_device(SPI2_HOST, &devcfg, &spi_handle_));
@@ -229,10 +232,10 @@ void LCD::init() {
     send_data(nvgamctrl, 14);
 
     send_cmd(0x36); // Memory Data Access Control
-    uint8_t madctl = 0x00; // Direction mapping (Use 0x00, 0x70, 0xA0, or 0xC0 depending on screen rotation)
+    uint8_t madctl = 0x00; 
     send_data(&madctl, 1);
 
-    send_cmd(0x21); // Inversion ON (Many IPS LCDs require this)
+    send_cmd(0x21); // Inversion ON (Required for many IPS ST7789 panels)
     send_cmd(0x11); // Sleep Out
     vTaskDelay(pdMS_TO_TICKS(120));
 
@@ -243,12 +246,11 @@ void LCD::init() {
 void LCD::fill_screen(uint16_t color) {
     set_address_window(0, 0, DISP_WIDTH - 1, DISP_HEIGHT - 1);
     
-    // Clear in hardware 20-line chunks so we don't blow up the RAM
     const int chunk_pixels = DISP_WIDTH * 20; 
     uint16_t* buffer = (uint16_t*)heap_caps_malloc(chunk_pixels * 2, MALLOC_CAP_DMA);
     if (!buffer) return;
 
-    // Swap endianness for SPI transmission
+    // Byte swap for ESP32 little-endian SPI
     uint16_t swapped_color = (color >> 8) | (color << 8);
     for (int i = 0; i < chunk_pixels; i++) {
         buffer[i] = swapped_color;
@@ -278,7 +280,7 @@ void LCD::draw_char(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg_co
     int draw_w = 8 * scale;
     int draw_h = 16 * scale;
 
-    // Clip rendering boundary checking
+    // Bounds check to avoid writing outside screen
     if (x >= DISP_WIDTH || y >= DISP_HEIGHT) return;
     if (x + draw_w > DISP_WIDTH) draw_w = DISP_WIDTH - x;
     if (y + draw_h > DISP_HEIGHT) draw_h = DISP_HEIGHT - y;
@@ -294,12 +296,19 @@ void LCD::draw_char(int16_t x, int16_t y, char c, uint16_t color, uint16_t bg_co
     const uint8_t* glyph = asc2_1608[c - ' '];
     int idx = 0;
 
+    // Rendering Logic fixed to properly extract Column-Major font data 
+    // (This prevents the "sliced" diagonal artifacts)
     for (int i = 0; i < draw_h; i++) {
         int orig_y = i / scale;
-        uint8_t line = glyph[orig_y];
         for (int j = 0; j < draw_w; j++) {
             int orig_x = j / scale;
-            if (line & (0x80 >> orig_x)) {
+            
+            // The Font array stores 2 bytes for every column (total 8 columns).
+            // orig_y < 8 reads the first byte, orig_y >= 8 reads the second byte.
+            uint8_t byte_val = glyph[orig_x * 2 + (orig_y >= 8 ? 1 : 0)];
+            bool pixel_on = byte_val & (0x80 >> (orig_y % 8));
+            
+            if (pixel_on) {
                 buffer[idx++] = f_color;
             } else {
                 buffer[idx++] = b_color;
@@ -324,7 +333,7 @@ void LCD::draw_string(int16_t x, int16_t y, const char* str, uint16_t color, uin
             draw_char(curr_x, curr_y, *str, color, bg_color, scale);
             curr_x += 8 * scale;
             
-            // Auto wrap
+            // Auto wrap text to the next line
             if (curr_x + (8 * scale) > DISP_WIDTH) {
                 curr_x = x;
                 curr_y += 16 * scale;
