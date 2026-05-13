@@ -297,6 +297,7 @@ extern "C" void app_main(void) {
             last_tx_update = now;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(5));
+        // Minimum 10ms (1 tick) required to prevent Watchdog Timeout (WDT) Starvation!
+        vTaskDelay(pdMS_TO_TICKS(10)); 
     }
 }
