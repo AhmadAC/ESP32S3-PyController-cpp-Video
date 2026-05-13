@@ -15,34 +15,38 @@
 static const char *TAG = "pyController";
 
 // --- Global State Variables ---
+// 'volatile' is CRITICAL here to prevent compiler optimization from
+// turning the while(!is_paired) loop into an infinite WDT-triggering loop.
+static volatile bool is_paired = false;
+static volatile bool has_car = false;
+static volatile bool has_cam = false;
+
 static uint8_t peer_mac[6] = {0};
-static bool is_paired = false;
 static const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 static char distance_str[32] = "0.00 cm";
 static bool line_follower_state = false;
 static bool sync_state = false;
 
-// --- ESP-NOW Receive Callback (ESP-IDF v5 Signature) ---
+// --- ESP-NOW Receive Callback ---
 void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int data_len) {
     if (data == NULL || data_len <= 0) return;
 
-    // Check if it's the pairing acknowledgement
-    if (data_len == 9 && memcmp(data, "pyCAR_ACK", 9) == 0) {
+    // Check if it's the pairing acknowledgement from PyCar or PyCam
+    if (data_len == 9 && (memcmp(data, "pyCAR_ACK", 9) == 0 || memcmp(data, "pyCAM_ACK", 9) == 0)) {
         if (!is_paired) {
-            memcpy(peer_mac, esp_now_info->src_addr, 6);
+            memcpy((void*)peer_mac, esp_now_info->src_addr, 6);
             is_paired = true;
         }
         return;
     }
 
-    // Check if it's a telemetry update (e.g., "D:12.34,L:1,X:0")
-    if (data[0] == 'D' && data[1] == ':') {
-        // Copy to a null-terminated buffer for safe string parsing
+    // Check if it's a telemetry update from PyCar (e.g., "D:12.34,L:1,X:0")
+    if (data_len >= 2 && data[0] == 'D' && data[1] == ':') {
+        has_car = true; // Flag that we are receiving Car telemetry
         char buf[64] = {0};
         memcpy(buf, data, data_len < 63 ? data_len : 63);
 
-        // Parse Distance
         char *d_ptr = strstr(buf, "D:");
         if (d_ptr) {
             float dist = 0.0f;
@@ -51,7 +55,6 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
             }
         }
 
-        // Parse Line Follower State
         char *l_ptr = strstr(buf, "L:");
         if (l_ptr) {
             int lf = 0;
@@ -60,7 +63,6 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
             }
         }
 
-        // Parse Sync State
         char *x_ptr = strstr(buf, "X:");
         if (x_ptr) {
             int sync = 0;
@@ -69,11 +71,17 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
             }
         }
     }
+    // Otherwise, if it's a larger packet not starting with D:, assume it's Camera Video Feed data
+    else if (data_len > 10) {
+        has_cam = true; // Flag that we are receiving Cam data
+        
+        // NOTE: Raw JPEG rendering logic would intercept 'data' here.
+    }
 }
 
 // --- Application Entry Point ---
 extern "C" void app_main(void) {
-    // 1. Initialize Non-Volatile Storage (Required for Wi-Fi)
+    // 1. Initialize Non-Volatile Storage
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -85,7 +93,6 @@ extern "C" void app_main(void) {
     LCD lcd;
     lcd.init();
     
-    // Clear out the static noise by filling the screen with white
     lcd.fill_screen(COLOR_WHITE);
     lcd.draw_string(10, 10, "Booting...", COLOR_BLACK, COLOR_WHITE, 2);
 
@@ -114,25 +121,24 @@ extern "C" void app_main(void) {
 
     // 4. Pairing Loop
     lcd.fill_screen(COLOR_WHITE);
-    lcd.draw_string(10, 100, "Searching for pyCar...", COLOR_BLACK, COLOR_WHITE, 2);
-    ESP_LOGI(TAG, "Searching for pyCar...");
+    lcd.draw_string(10, 100, "Searching for", COLOR_BLACK, COLOR_WHITE, 2);
+    lcd.draw_string(10, 130, "PyCar / PyCam...", COLOR_BLACK, COLOR_WHITE, 2);
+    ESP_LOGI(TAG, "Searching for PyCar or PyCam...");
 
     while (!is_paired) {
         // Ping out the discovery message
         esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
-        vTaskDelay(pdMS_TO_TICKS(100)); // Yield to allow receiving the ACK
+        vTaskDelay(pdMS_TO_TICKS(100)); // Yield to allow receiving the ACK and prevent Watchdog triggers
     }
 
-    ESP_LOGI(TAG, "Connected to Car!");
+    ESP_LOGI(TAG, "Connected to Peer!");
     
-    // Register the newly discovered pyCar MAC address
+    // Register the newly discovered peer MAC address
     memcpy(peer_info.peer_addr, peer_mac, 6);
     ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
 
-    // 5. Build Initial User Interface
+    // Clear screen for dynamic UI rendering
     lcd.fill_screen(COLOR_WHITE);
-    lcd.draw_string(10, 10, "Connected!", COLOR_GREEN, COLOR_WHITE, 2);
-    lcd.draw_string(10, 160, "Ultrasonic:", COLOR_BLACK, COLOR_WHITE, 2);
 
     // --- State Timers & Caches ---
     TickType_t last_lcd_update = xTaskGetTickCount();
@@ -140,8 +146,11 @@ extern "C" void app_main(void) {
     char last_dist_str_on_screen[32] = "";
     bool last_lf_state = false;
     bool last_sync_state = false;
+    
+    bool car_ui_drawn = false;
+    bool cam_ui_drawn = false;
 
-    // 6. Main Control Loop
+    // 5. Main Control Loop
     while (true) {
         TickType_t now = xTaskGetTickCount();
 
@@ -150,29 +159,47 @@ extern "C" void app_main(void) {
         // -----------------------------------------------------------------
         if (pdTICKS_TO_MS(now - last_lcd_update) >= 200) {
             
-            // Distance Text Update
-            if (strcmp(distance_str, last_dist_str_on_screen) != 0) {
-                char padded_text[32];
-                // Pad with spaces to neatly overwrite old characters without clearing the whole screen
-                snprintf(padded_text, sizeof(padded_text), "%-12s", distance_str);
-                lcd.draw_string(10, 190, padded_text, COLOR_BLACK, COLOR_WHITE, 2);
-                strcpy(last_dist_str_on_screen, distance_str);
-            }
+            if (has_car) {
+                if (!car_ui_drawn) {
+                    lcd.fill_screen(COLOR_WHITE);
+                    lcd.draw_string(10, 10, "PyCar Connected!", COLOR_GREEN, COLOR_WHITE, 2);
+                    lcd.draw_string(10, 160, "Ultrasonic:", COLOR_BLACK, COLOR_WHITE, 2);
+                    car_ui_drawn = true;
+                    cam_ui_drawn = false;
+                }
 
-            // Line Follower Icon Update
-            if (line_follower_state != last_lf_state) {
-                const char* icon = line_follower_state ? "[L]" : "   ";
-                uint16_t fg_color = line_follower_state ? COLOR_BLACK : COLOR_WHITE;
-                lcd.draw_string(190, 10, icon, fg_color, COLOR_WHITE, 2);
-                last_lf_state = line_follower_state;
-            }
+                // Distance Text Update
+                if (strcmp(distance_str, last_dist_str_on_screen) != 0) {
+                    char padded_text[32];
+                    snprintf(padded_text, sizeof(padded_text), "%-12s", distance_str);
+                    lcd.draw_string(10, 190, padded_text, COLOR_BLACK, COLOR_WHITE, 2);
+                    strcpy(last_dist_str_on_screen, distance_str);
+                }
 
-            // Sync State Icon Update
-            if (sync_state != last_sync_state) {
-                const char* icon = sync_state ? "[X]" : "   ";
-                uint16_t fg_color = sync_state ? COLOR_RED : COLOR_WHITE;
-                lcd.draw_string(140, 10, icon, fg_color, COLOR_WHITE, 2);
-                last_sync_state = sync_state;
+                // Line Follower Icon Update
+                if (line_follower_state != last_lf_state) {
+                    const char* icon = line_follower_state ? "[L]" : "   ";
+                    uint16_t fg_color = line_follower_state ? COLOR_BLACK : COLOR_WHITE;
+                    lcd.draw_string(190, 10, icon, fg_color, COLOR_WHITE, 2);
+                    last_lf_state = line_follower_state;
+                }
+
+                // Sync State Icon Update
+                if (sync_state != last_sync_state) {
+                    const char* icon = sync_state ? "[X]" : "   ";
+                    uint16_t fg_color = sync_state ? COLOR_RED : COLOR_WHITE;
+                    lcd.draw_string(140, 10, icon, fg_color, COLOR_WHITE, 2);
+                    last_sync_state = sync_state;
+                }
+            } 
+            else if (has_cam && !has_car) {
+                // If we only have the camera, show the camera UI
+                if (!cam_ui_drawn) {
+                    lcd.fill_screen(COLOR_BLACK);
+                    lcd.draw_string(10, 10, "PyCam Feed Active", COLOR_WHITE, COLOR_BLACK, 2);
+                    cam_ui_drawn = true;
+                    car_ui_drawn = false;
+                }
             }
 
             last_lcd_update = now;
@@ -184,16 +211,12 @@ extern "C" void app_main(void) {
         if (pdTICKS_TO_MS(now - last_tx_update) >= 50) {
             GamepadState state = gamepad.read();
             
-            // Normalize axes from [-128 -> 127] space to [0 -> 255] space (matches MicroPython)
             uint8_t lx = (uint8_t)(state.left_x + 128);
             uint8_t ly = (uint8_t)(state.left_y + 128);
             uint8_t rx = (uint8_t)(state.right_x + 128);
             uint8_t ry = (uint8_t)(state.right_y + 128);
             
-            // Pack Buttons (Mimics the 'keyByte5' logic from the old C extension)
-            // bit7: X, bit6: A, bit5: B, bit4: Y
-            // bits0-3: 0=up, 1=ur, 2=r, 3=dr, 4=d, 5=dl, 6=l, 7=ul, 8=none
-            uint8_t btns = 8; // Default no action
+            uint8_t btns = 8; 
             if (state.up && state.right)         btns = 1;
             else if (state.right && state.down)  btns = 3;
             else if (state.left && state.down)   btns = 5;
@@ -208,14 +231,12 @@ extern "C" void app_main(void) {
             if (state.b) btns |= (1 << 5);
             if (state.y) btns |= (1 << 4);
 
-            // Construct payload: Header (67/'C'), LX, LY, RX, RY, Buttons
             uint8_t payload[6] = {67, lx, ly, rx, ry, btns};
             esp_now_send(peer_mac, payload, sizeof(payload));
 
             last_tx_update = now;
         }
 
-        // Delay to feed Watchdog and allow background tasks to process Wi-Fi packets
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TOA_TICKS(5));
     }
 }
