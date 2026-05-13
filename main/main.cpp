@@ -1,4 +1,3 @@
-// src/main.cpp
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
@@ -9,7 +8,7 @@
 #include <WiFiRawComm.h>
 #include <ESPNowCam.h>
 
-// --- Gamepad Pinout ---
+// --- Gamepad Pinout (from your mpconfigboard.h) ---
 #define BTN_START 0
 #define BTN_BACK  1
 #define BTN_A_OK  6
@@ -23,7 +22,7 @@
 #define BTN_A     16
 #define BTN_B     21
 
-// --- Analog Stick ADC Channels ---
+// --- Analog Stick ADC Channels (from your mpconfigboard.h) ---
 #define ADC_JOY_LX 3 // ADC1_CHANNEL_3 -> GPIO 4
 #define ADC_JOY_LY 4 // ADC1_CHANNEL_4 -> GPIO 5
 #define ADC_JOY_RX 6 // ADC1_CHANNEL_6 -> GPIO 7
@@ -73,7 +72,7 @@ void onVideoFrame(uint8_t *buffer, size_t length) {
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
-            // Erase previous circle by drawing the background color at that spot
+            // Erase previous circle by drawing the pixel color currently under it
             tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); 
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
@@ -102,7 +101,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
             Serial.println("Paired to Peer!");
         }
     } 
-    // 2. Telemetry Parsing Logic for PyCar
+    // 2. Telemetry Parsing Logic
     else if (len > 3 && data[0] == 'D' && data[1] == ':') {
         char msg[64];
         int cpyLen = len < 63 ? len : 63;
@@ -116,7 +115,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     }
 }
 
-// --- Gamepad Reading Functions ---
+// --- Gamepad Reading Functions (Replaces psxcontroller.c) ---
 uint8_t getDPadAndButtons() {
     uint8_t keyByte5 = 8; // Default to "no action"
     bool up = !digitalRead(BTN_UP);
@@ -146,25 +145,29 @@ uint8_t getSystemButtons() {
 }
 
 uint8_t getAnalog(int channel) {
-    int val = analogRead(channel);
-    return val / 16; 
+    int val = analogRead(channel); // Reads ADC channel directly
+    return val / 16; // Map 12-bit (4095) down to 8-bit (255)
 }
 
 void setup() {
     Serial.begin(115200);
 
+    // --- Hardware Init ---
     const int buttons[] = {BTN_START, BTN_BACK, BTN_A_OK, BTN_B_OK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
     for (int pin : buttons) {
         pinMode(pin, INPUT_PULLUP);
     }
     
+    // --- Screen Init ---
     tft.init();
     tft.setRotation(0); 
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting Controller...", 20, 110, 4);
-    
-    // The ESPNowCam/WiFiRawComm library handles all WiFi initialization internally.
+
+    // --- Network Init ---
+    // IMPORTANT: radio.init() handles esp_netif_init internally. 
+    // Do not call WiFi.mode() here to avoid duplicate key crash.
     radio.init(512); 
     radio.setChannel(1);
 
@@ -173,6 +176,7 @@ void setup() {
         return;
     }
     
+    // Register Broadcast peer for sending discovery pings
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, broadcastMac, 6);
     peerInfo.channel = 1;
@@ -181,6 +185,7 @@ void setup() {
     
     esp_now_register_recv_cb(onDataRecv);
 
+    // Start Raw Wi-Fi Video Receiver
     radio.setRecvCallback(onVideoFrame);
 
     tft.fillScreen(TFT_WHITE);
@@ -191,6 +196,7 @@ void loop() {
     unsigned long now = millis();
 
     if (currentState == SEARCHING) {
+        // Send Discovery Ping every 250ms
         if (now - lastDiscoveryTime > 250) {
             const char* msg = "pyCAR_DISCOVER";
             esp_now_send(broadcastMac, (uint8_t*)msg, strlen(msg));
@@ -198,6 +204,7 @@ void loop() {
         }
     } 
     else if (currentState == CONNECTED) {
+        // Send Joystick Control Packets every 50ms (20Hz)
         if (now - lastJoystickTime > 50) {
             uint8_t lx = getAnalog(ADC_JOY_LX);
             uint8_t ly = 255 - getAnalog(ADC_JOY_LY); 
