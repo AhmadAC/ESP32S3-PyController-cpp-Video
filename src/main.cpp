@@ -49,25 +49,25 @@ bool lineFollowerActive = false;
 unsigned long lastDiscoveryTime = 0;
 unsigned long lastJoystickTime = 0;
 
-// === JPEG Drawing Callback (High-Speed RAM to Screen) ===
+// === JPEG Drawing Callback ===
 int JPEGDraw(JPEGDRAW *pDraw) {
     tft.pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
-    return 1; // Continue drawing
+    return 1; 
 }
 
 // === Raw Wi-Fi Video Frame Received Callback ===
 void onVideoFrame(size_t length) {
     if (currentState != CONNECTED) return;
     
-    // FIXED: getBuffer() is the correct method for EspNowCam v0.2.1
-    uint8_t *buffer = radio.getBuffer();
+    // FIXED: In version 0.2.1, use the public pointer 'fb' directly
+    uint8_t *buffer = radio.fb;
     
-    if (jpeg.openRAM(buffer, length, JPEGDraw)) {
+    if (buffer != nullptr && jpeg.openRAM(buffer, length, JPEGDraw)) {
         jpeg.setPixelType(RGB565_BIG_ENDIAN); 
         jpeg.decode(0, 0, 0);                 
         jpeg.close();
 
-        // --- Overlay Telemetry Text on top of the video feed ---
+        // --- Overlay Telemetry Text ---
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
         tft.setTextDatum(TL_DATUM); 
         tft.drawString("Dist: " + String(currentDist, 2) + " cm  ", 5, 220, 2);
@@ -75,7 +75,7 @@ void onVideoFrame(size_t length) {
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
-            // FIXED: readPixel is the correct method for TFT_eSPI
+            // FIXED: Using readPixel
             tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); 
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
