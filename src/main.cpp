@@ -34,8 +34,8 @@ WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
 // --- Video Buffer & Flags ---
-const int FRAME_BUFFER_SIZE = 20480; // 20KB
-// Statically allocated to ensure it fits in internal RAM on N8 (No PSRAM) board
+// Reduced to 24KB to ensure stability on S3 N8 (No PSRAM)
+#define FRAME_BUFFER_SIZE 24576 
 uint8_t frame_buffer[FRAME_BUFFER_SIZE]; 
 
 volatile bool hasNewFrame = false;
@@ -58,24 +58,28 @@ unsigned long lastJoystickTime = 0;
 
 // === JPEG Drawing Callback ===
 int JPEGDraw(JPEGDRAW *pDraw) {
-    // This function is called by the JPEG decoder with chunks of the decoded image.
-    tft.pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
+    if (pDraw && pDraw->pPixels) {
+        tft.pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
+    }
     return 1;
 }
 
-// === Video Callback (SIGNAL ONLY) ===
-// This is called from the ESP-NOW context, so it must be very fast.
-// It just copies the frame length and sets a flag for the main loop to handle.
+// === Video Callback ===
 void onVideoFrame(uint32_t length) {
+    // Drop frames if we aren't connected or if a frame is already being processed
     if (currentState != CONNECTED || hasNewFrame) return;
-    if (length > FRAME_BUFFER_SIZE) return;
-    latestFrameLength = length;
-    hasNewFrame = true;
+    
+    // Safety check: ensure length fits in our static buffer
+    if (length > 0 && length <= FRAME_BUFFER_SIZE) {
+        latestFrameLength = length;
+        hasNewFrame = true;
+    }
 }
 
-// === ESP-NOW Data Callback (SIGNAL ONLY) ===
-// FIXED: Reverted to the traditional signature as required by your framework
+// === ESP-NOW Data Callback ===
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
+    if (!data || len <= 0) return;
+
     if (currentState == SEARCHING && len >= 9 && strncmp((const char*)data, "pyCAR_ACK", 9) == 0) {
         memcpy(carMac, mac, 6);
         pairedFlag = true;
@@ -93,7 +97,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
 }
 
 uint8_t getDPadAndButtons() {
-    uint8_t keyByte5 = 8; // Neutral state
+    uint8_t keyByte5 = 8; // Neutral
     bool up = !digitalRead(BTN_UP);
     bool down = !digitalRead(BTN_DOWN);
     bool left = !digitalRead(BTN_LEFT);
@@ -116,25 +120,30 @@ uint8_t getAnalog(int channel) {
 }
 
 void setup() {
-    delay(2000); // Important for S3 stability on boot
+    // Critical delay to allow S3 hardware to stabilize and serial to attach
+    delay(1000); 
     Serial.begin(115200);
 
     const int buttons[] = {BTN_START, BTN_BACK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
     for (int pin : buttons) pinMode(pin, INPUT_PULLUP);
 
+    // Initialize display early so we can see status
     tft.init();
     tft.setRotation(0);
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
-    tft.drawString("Booting...", 10, 10, 2);
+    tft.drawString("pyController S3", 10, 10, 2);
+    tft.drawString("Status: Initializing...", 10, 30, 2);
 
-    jpeg.setMaxOutputSize(1); // Crucial for No-PSRAM boards
+    // Clear buffer to prevent decoder from reading random boot-up garbage
+    memset(frame_buffer, 0, FRAME_BUFFER_SIZE);
 
     WiFi.mode(WIFI_STA);
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
 
     if (esp_now_init() != ESP_OK) {
-        Serial.println("Error initializing ESP-NOW");
+        Serial.println("ESP-NOW Init Failed");
+        tft.drawString("Error: ESP-NOW Fail", 10, 50, 2);
         return;
     }
 
@@ -144,19 +153,22 @@ void setup() {
     peerInfo.encrypt = false;
     esp_now_add_peer(&peerInfo);
     
-    // Register the callback
     esp_now_register_recv_cb(onDataRecv);
 
     radio.setRecvBuffer(frame_buffer);
     radio.setRecvCallback(onVideoFrame);
-    radio.init(160); // Match 160x120 resolution
+    
+    // Initialize radio with the expected resolution
+    radio.init(160); 
 
-    tft.drawString("Searching for Car...", 10, 110, 2);
+    tft.drawString("Status: Searching...", 10, 30, 2);
+    Serial.println("System Ready. Searching for pyCar...");
 }
 
 void loop() {
     unsigned long now = millis();
 
+    // Handle pairing logic
     if (pairedFlag) {
         pairedFlag = false;
         esp_now_peer_info_t peerInfo = {};
@@ -168,23 +180,28 @@ void loop() {
         }
         currentState = CONNECTED;
         tft.fillScreen(TFT_BLACK);
-        Serial.println("Paired with Car!");
+        Serial.println("Connected to Car!");
     }
 
+    // Process new video frames
     if (hasNewFrame) {
-        hasNewFrame = false;
-        if (currentState == CONNECTED) {
+        // Only attempt decode if we are connected and buffer contains a valid JPEG header
+        if (currentState == CONNECTED && latestFrameLength > 4 && frame_buffer[0] == 0xFF && frame_buffer[1] == 0xD8) {
             if (jpeg.openRAM(frame_buffer, latestFrameLength, JPEGDraw)) {
                 jpeg.setPixelType(RGB565_BIG_ENDIAN);
                 jpeg.decode(0, 0, 0);
                 jpeg.close();
 
+                // Draw telemetry overlay
                 tft.setTextColor(TFT_GREEN, TFT_BLACK);
                 tft.drawString("Dist: " + String(currentDist, 1) + "cm", 5, 220, 2);
             }
         }
+        // Always reset flag to prevent lockup
+        hasNewFrame = false; 
     }
 
+    // Task Management
     if (currentState == SEARCHING) {
         if (now - lastDiscoveryTime > 500) {
             esp_now_send(broadcastMac, (uint8_t*)"pyCAR_DISCOVER", 14);
@@ -194,7 +211,7 @@ void loop() {
     else if (currentState == CONNECTED) {
         if (now - lastJoystickTime > 50) {
             uint8_t payload[6] = {
-                67,
+                67, // 'C' for Control
                 getAnalog(ADC_JOY_LX),
                 (uint8_t)(255 - getAnalog(ADC_JOY_LY)),
                 getAnalog(ADC_JOY_RX),
