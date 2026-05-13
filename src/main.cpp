@@ -34,8 +34,9 @@ WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
 // --- Video Buffer & Flags ---
-const int FRAME_BUFFER_SIZE = 20480; // 20KB
-uint8_t *frame_buffer = nullptr;
+const int FRAME_BUFFER_SIZE = 20480; // 20KB for 160x120 resolution
+// CRITICAL FIX: Statically allocating the buffer prevents runtime RAM panics
+uint8_t frame_buffer[FRAME_BUFFER_SIZE]; 
 
 volatile bool hasNewFrame = false;
 volatile uint32_t latestFrameLength = 0;
@@ -70,7 +71,11 @@ void onVideoFrame(uint32_t length) {
 }
 
 // === ESP-NOW Data Callback (SIGNAL ONLY) ===
-void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
+// CRITICAL FIX: ESP32 Arduino Core v3.0+ requires esp_now_recv_info_t. 
+// Using the old signature was causing the immediate StoreProhibited boot crash!
+void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+    const uint8_t *mac = info->src_addr;
+
     if (currentState == SEARCHING && len >= 9 && strncmp((const char*)data, "pyCAR_ACK", 9) == 0) {
         memcpy(carMac, mac, 6);
         pairedFlag = true;
@@ -111,6 +116,8 @@ uint8_t getAnalog(int channel) {
 }
 
 void setup() {
+    // CRITICAL FIX: Give the S3 time to mount USB hardware before firing up the SPI screen
+    delay(2000); 
     Serial.begin(115200);
 
     const int buttons[] = {BTN_START, BTN_BACK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
@@ -122,24 +129,10 @@ void setup() {
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting...", 10, 10, 2);
 
-    // ====================================================================================
-    //  CRITICAL FIX #3: Configure JPEG decoder for minimal memory usage.
-    //  This forces it to process the image in the smallest possible chunks.
-    // ====================================================================================
+    // Configure JPEG decoder for minimal memory usage
     jpeg.setMaxOutputSize(1);
 
     Serial.printf("Initial Free Heap: %d bytes\n", ESP.getFreeHeap());
-
-    frame_buffer = (uint8_t *)heap_caps_malloc(FRAME_BUFFER_SIZE, MALLOC_CAP_DMA);
-
-    if (!frame_buffer) {
-        Serial.println("FATAL: Failed to allocate frame buffer!");
-        tft.fillScreen(TFT_RED);
-        tft.drawString("FATAL ERROR:", 10, 110, 2);
-        tft.drawString("Out of memory!", 10, 130, 2);
-        while(1) delay(1000);
-    }
-    Serial.printf("Free Heap after buffer alloc: %d bytes\n", ESP.getFreeHeap());
 
     WiFi.mode(WIFI_STA);
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
@@ -154,11 +147,15 @@ void setup() {
     peerInfo.channel = 1;
     peerInfo.encrypt = false;
     esp_now_add_peer(&peerInfo);
+    
+    // Register the modern callback signature
     esp_now_register_recv_cb(onDataRecv);
 
     radio.setRecvBuffer(frame_buffer);
     radio.setRecvCallback(onVideoFrame);
-    radio.init(240);
+    
+    // Set to 160 to match 160x120 resolution PyCam setup
+    radio.init(160);
 
     tft.drawString("Searching for Car...", 10, 110, 2);
 }
@@ -204,14 +201,3 @@ void loop() {
         if (now - lastJoystickTime > 50) {
             uint8_t payload[6] = {
                 67,
-                getAnalog(ADC_JOY_LX),
-                (uint8_t)(255 - getAnalog(ADC_JOY_LY)),
-                getAnalog(ADC_JOY_RX),
-                (uint8_t)(255 - getAnalog(ADC_JOY_RY)),
-                getDPadAndButtons()
-            };
-            esp_now_send(carMac, payload, sizeof(payload));
-            lastJoystickTime = now;
-        }
-    }
-}
