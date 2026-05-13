@@ -2,203 +2,228 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+
 #include <TFT_eSPI.h>
 #include <JPEGDEC.h>
 #include <WiFiRawComm.h>
 #include <ESPNowCam.h>
 
-// --- pyController Hardware Pins ---
-#define BTN_UP      10
-#define BTN_DOWN    11
-#define BTN_LEFT    12
-#define BTN_RIGHT   13
-#define BTN_A       16
-#define BTN_B       21
-#define BTN_X       14
-#define BTN_Y       15
-#define BTN_START   0
-#define BTN_BACK    1
+// --- Gamepad Pinout (from your mpconfigboard.h) ---
+#define BTN_START 0
+#define BTN_BACK  1
+#define BTN_A_OK  6
+#define BTN_B_OK  9
+#define BTN_UP    10
+#define BTN_DOWN  11
+#define BTN_LEFT  12
+#define BTN_RIGHT 13
+#define BTN_X     14
+#define BTN_Y     15
+#define BTN_A     16
+#define BTN_B     21
 
-#define POT_LX      4
-#define POT_LY      5
-#define POT_RX      7
-#define POT_RY      8
+// --- Analog Stick GPIO Pins (Must be GPIO number, not ADC channel) ---
+#define PIN_JOY_LX 4 
+#define PIN_JOY_LY 5 
+#define PIN_JOY_RX 7 
+#define PIN_JOY_RY 8 
 
-// --- Global Objects ---
+// --- Library Objects ---
 TFT_eSPI tft = TFT_eSPI();
 JPEGDEC jpeg;
 WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
-// Buffer for Video Frame
-#define FRAME_BUFFER_SIZE 20000 
-uint8_t frame_buffer[FRAME_BUFFER_SIZE]; 
-
-volatile bool hasNewFrame = false;
-volatile uint32_t latestFrameLength = 0;
-
+// --- State Management ---
 enum State { SEARCHING, CONNECTED };
 State currentState = SEARCHING;
 uint8_t carMac[6];
 const uint8_t broadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// JPEG Drawing Callback
+// --- Telemetry Data ---
+float currentDist = 0.0;
+bool lineFollowerActive = false;
+
+// --- Timers ---
+unsigned long lastDiscoveryTime = 0;
+unsigned long lastJoystickTime = 0;
+
+// === JPEG Drawing Callback (High-Speed RAM to Screen) ===
 int JPEGDraw(JPEGDRAW *pDraw) {
-    if (pDraw->pPixels) {
-        tft.pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
-    }
-    return 1;
+    tft.pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
+    return 1; // Continue drawing
 }
 
-// Video Packet Callback
-void onVideoFrame(uint32_t length) {
-    if (currentState != CONNECTED || hasNewFrame) return;
-    if (length > 0 && length <= FRAME_BUFFER_SIZE) {
-        latestFrameLength = length;
-        hasNewFrame = true;
+// === Raw Wi-Fi Video Frame Received Callback ===
+void onVideoFrame(uint8_t *buffer, size_t length) {
+    if (currentState != CONNECTED) return;
+    
+    // Decode the JPEG buffer directly from RAM and draw it using the JPEGDraw callback
+    if (jpeg.openRAM(buffer, length, JPEGDraw)) {
+        jpeg.setPixelType(RGB565_BIG_ENDIAN); // Match TFT_eSPI format
+        jpeg.decode(0, 0, 0);                 // Draw at x=0, y=0 with no scaling
+        jpeg.close();
+
+        // --- Overlay Telemetry Text on top of the video feed ---
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.setTextDatum(TL_DATUM); // Top-Left datum
+        tft.drawString("Dist: " + String(currentDist, 2) + " cm  ", 5, 220, 2);
+        
+        if (lineFollowerActive) {
+            tft.fillCircle(220, 20, 10, TFT_BLACK);
+        } else {
+            // Erase previous circle if it was filled
+            tft.fillCircle(220, 20, 10, tft.getPixel(220, 20)); // "Erase" by drawing background color
+            tft.drawCircle(220, 20, 10, TFT_WHITE);
+        }
     }
 }
 
-// ESP-NOW Data Callback (ESP32 Arduino Core v2.x signature)
+// === ESP-NOW Data Received Callback (Handshake & Telemetry) ===
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
-    if (currentState == SEARCHING && len >= 9 && memcmp(data, "pyCAR_ACK", 9) == 0) {
+    // 1. Handshake Logic
+    if (currentState == SEARCHING && len >= 9 && (strncmp((const char*)data, "pyCAR_ACK", 9) == 0 || strncmp((const char*)data, "pyCAM_ACK", 9) == 0)) {
         memcpy(carMac, mac, 6);
+        
+        esp_now_peer_info_t peerInfo = {};
+        memcpy(peerInfo.peer_addr, carMac, 6);
+        peerInfo.channel = 1;
+        peerInfo.encrypt = false;
+        if(esp_now_is_peer_exist(carMac)) {
+             esp_now_mod_peer(&peerInfo);
+        } else {
+             esp_now_add_peer(&peerInfo);
+        }
+        
         currentState = CONNECTED;
-        Serial.println("Paired with Car!");
+        tft.fillScreen(TFT_BLACK); // Clear "Searching..." message
+        Serial.println("Paired to Target!");
+    } 
+    // 2. Telemetry Parsing Logic
+    else if (len > 3 && data[0] == 'D' && data[1] == ':') {
+        char msg[64];
+        int cpyLen = len < 63 ? len : 63;
+        memcpy(msg, data, cpyLen);
+        msg[cpyLen] = '\0'; // Null-terminate
+        
+        char* d_ptr = strstr(msg, "D:");
+        char* l_ptr = strstr(msg, "L:");
+        if (d_ptr) currentDist = atof(d_ptr + 2);
+        if (l_ptr) lineFollowerActive = (l_ptr[2] == '1');
     }
 }
 
-// Encode gamepad buttons into a single byte matching original pyController protocol
-uint8_t encodeButtons() {
+// --- Gamepad Reading Functions ---
+uint8_t getDPadAndButtons() {
+    uint8_t keyByte5 = 8; // Default to "no action"
     bool up = !digitalRead(BTN_UP);
     bool down = !digitalRead(BTN_DOWN);
     bool left = !digitalRead(BTN_LEFT);
     bool right = !digitalRead(BTN_RIGHT);
 
-    uint8_t dpad = 8; // Idle
-    if (up && right) dpad = 1;
-    else if (right && down) dpad = 3;
-    else if (down && left) dpad = 5;
-    else if (left && up) dpad = 7;
-    else if (up) dpad = 0;
-    else if (right) dpad = 2;
-    else if (down) dpad = 4;
-    else if (left) dpad = 6;
-
-    uint8_t btns = dpad;
+    if (up) keyByte5 = (right) ? 1 : (left) ? 7 : 0;
+    else if (down) keyByte5 = (right) ? 3 : (left) ? 5 : 4;
+    else if (right) keyByte5 = 2;
+    else if (left) keyByte5 = 6;
     
-    // Action Buttons
-    if (!digitalRead(BTN_A)) btns |= 0x10; // A toggles line follower
-    if (!digitalRead(BTN_B)) btns |= 0x20; // B toggles headlights
-    if (!digitalRead(BTN_X)) btns |= 0x40;
-    if (!digitalRead(BTN_Y)) btns |= 0x80;
+    if (!digitalRead(BTN_Y)) keyByte5 |= (1 << 4);
+    if (!digitalRead(BTN_B)) keyByte5 |= (1 << 5);
+    if (!digitalRead(BTN_A)) keyByte5 |= (1 << 6);
+    if (!digitalRead(BTN_X)) keyByte5 |= (1 << 7);
+    return keyByte5;
+}
 
-    return btns;
+uint8_t getSystemButtons() {
+    uint8_t keyByte6 = 0;
+    if (!digitalRead(BTN_BACK)) keyByte6 |= (1 << 4);
+    if (!digitalRead(BTN_START)) keyByte6 |= (1 << 5);
+    if (!digitalRead(BTN_B_OK)) keyByte6 |= (1 << 6);
+    if (!digitalRead(BTN_A_OK)) keyByte6 |= (1 << 7);
+    return keyByte6;
+}
+
+uint8_t getAnalog(int pin) {
+    int val = analogRead(pin); // Reads ADC from GPIO pin
+    return val / 16;           // Map 12-bit (4095) down to 8-bit (255)
 }
 
 void setup() {
     Serial.begin(115200);
+    delay(1000); // Allow serial monitor to catch up
 
-    // Initialize Input Pins
-    pinMode(BTN_UP, INPUT_PULLUP);
-    pinMode(BTN_DOWN, INPUT_PULLUP);
-    pinMode(BTN_LEFT, INPUT_PULLUP);
-    pinMode(BTN_RIGHT, INPUT_PULLUP);
-    pinMode(BTN_A, INPUT_PULLUP);
-    pinMode(BTN_B, INPUT_PULLUP);
-    pinMode(BTN_X, INPUT_PULLUP);
-    pinMode(BTN_Y, INPUT_PULLUP);
-    pinMode(BTN_START, INPUT_PULLUP);
-    pinMode(BTN_BACK, INPUT_PULLUP);
-
-    // Set analog resolution to match expected 0-4095 range for mapping
-    analogReadResolution(12);
-
-    Serial.println("\n[1/4] Starting Display...");
+    Serial.println("[1/4] Starting Display...");
+    // --- Screen Init ---
     tft.init();
-    tft.setRotation(0);
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    
-    // Use safe built-in font drawing
-    tft.setTextSize(2);
-    tft.setCursor(10, 10);
-    tft.println("pyController S3");
-    tft.println("Starting...");
+    tft.setRotation(0); 
+    tft.fillScreen(TFT_WHITE);
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.drawString("Booting Controller...", 20, 110, 4);
 
-    Serial.println("[2/4] Initializing WiFi...");
+    Serial.println("[2/4] Initializing Hardware...");
+    // --- Hardware Init ---
+    const int buttons[] = {BTN_START, BTN_BACK, BTN_A_OK, BTN_B_OK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
+    for (int pin : buttons) {
+        pinMode(pin, INPUT_PULLUP);
+    }
+    
+    Serial.println("[3/4] Initializing Network...");
+    // --- Network Init ---
     WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    
-    // Force ESP-NOW communication channel
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-    
+
     if (esp_now_init() != ESP_OK) {
-        Serial.println("ESP-NOW Fail");
+        Serial.println("ESP-NOW Init Failed");
+        tft.fillScreen(TFT_RED);
+        tft.setTextColor(TFT_WHITE, TFT_RED);
+        tft.drawString("ESP-NOW Error!", 25, 110, 4);
         return;
     }
+    
+    // Register Broadcast peer for sending discovery pings
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, broadcastMac, 6);
+    peerInfo.channel = 1;
+    peerInfo.encrypt = false;
+    esp_now_add_peer(&peerInfo);
+    
     esp_now_register_recv_cb(onDataRecv);
 
-    Serial.println("[3/4] Setting up Radio...");
-    esp_now_peer_info_t peer = {};
-    memcpy(peer.peer_addr, broadcastMac, 6);
-    peer.channel = 1;
-    peer.encrypt = false;
-    esp_now_add_peer(&peer);
+    Serial.println("[4/4] Starting Video Receiver...");
+    // Start Raw Wi-Fi Video Receiver
+    radio.init(512); // Standard chunk size
+    radio.setReceiveCallback(onVideoFrame);
 
-    Serial.println("[4/4] Starting Video Engine...");
-    radio.setRecvBuffer(frame_buffer);
-    radio.setRecvCallback(onVideoFrame);
-    
-    // Init video at 160px width mode
-    radio.init(160); 
-
-    Serial.println("BOOT COMPLETE");
-    tft.fillScreen(TFT_BLACK);
+    tft.fillScreen(TFT_WHITE);
+    tft.drawString("Searching for Target...", 20, 110, 4);
+    Serial.println("Initialization complete! Ready to pair.");
 }
 
 void loop() {
     unsigned long now = millis();
-    static unsigned long lastSearch = 0;
-    static unsigned long lastGamepad = 0;
 
-    // 1. Process Received Video Frames
-    if (hasNewFrame) {
-        // Double check JPEG Start of Image (SOI) marker to prevent crash
-        if (latestFrameLength > 4 && frame_buffer[0] == 0xFF && frame_buffer[1] == 0xD8) {
-            if (jpeg.openRAM(frame_buffer, latestFrameLength, JPEGDraw)) {
-                jpeg.setPixelType(RGB565_BIG_ENDIAN);
-                jpeg.decode(0, 0, 0);
-                jpeg.close();
-            }
-        }
-        hasNewFrame = false;
-    }
-
-    // 2. State-based Logic (Searching vs Connected)
     if (currentState == SEARCHING) {
-        if (now - lastSearch > 1500) {
-            esp_now_send(broadcastMac, (uint8_t*)"pyCAR_DISCOVER", 14);
-            lastSearch = now;
-            
-            tft.setCursor(10, 110);
-            tft.print("Searching for Car... ");
+        // Send Discovery Ping every 250ms
+        if (now - lastDiscoveryTime > 250) {
+            const char* msg = "pyCAR_DISCOVER";
+            esp_now_send(broadcastMac, (uint8_t*)msg, strlen(msg));
+            lastDiscoveryTime = now;
         }
-    } else {
-        // 3. Send Gamepad Data (~20Hz)
-        if (now - lastGamepad > 50) {
-            uint8_t lx = map(analogRead(POT_LX), 0, 4095, 0, 255);
-            uint8_t ly = map(analogRead(POT_LY), 0, 4095, 0, 255);
-            uint8_t rx = map(analogRead(POT_RX), 0, 4095, 0, 255);
-            uint8_t ry = map(analogRead(POT_RY), 0, 4095, 0, 255);
+    } 
+    else if (currentState == CONNECTED) {
+        // Send Joystick Control Packets every 50ms (20Hz)
+        if (now - lastJoystickTime > 50) {
+            uint8_t lx = getAnalog(PIN_JOY_LX);
+            uint8_t ly = 255 - getAnalog(PIN_JOY_LY); // Y-axis is often inverted
+            uint8_t rx = getAnalog(PIN_JOY_RX);
+            uint8_t ry = 255 - getAnalog(PIN_JOY_RY); // Y-axis is often inverted
+            uint8_t byte5 = getDPadAndButtons();
             
-            uint8_t buttons = encodeButtons();
+            // Note: Your python code was sending byte5 natively. This matches the exact protocol the
+            // camera is now sniffing for to extract the 'X' button state!
+            uint8_t payload[6] = {67, lx, ly, rx, ry, byte5};
+            esp_now_send(carMac, payload, 6);
             
-            // Magic packet header 'C' (67)
-            uint8_t pkt[6] = { 67, lx, ly, rx, ry, buttons };
-            esp_now_send(carMac, pkt, 6);
-            
-            lastGamepad = now;
+            lastJoystickTime = now;
         }
     }
 }
