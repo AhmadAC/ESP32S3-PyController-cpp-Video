@@ -1,3 +1,4 @@
+// main/main.cpp
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
@@ -37,7 +38,7 @@ ESPNowCam radio(&wifiRaw);
 // --- State Management ---
 enum State { SEARCHING, CONNECTED };
 State currentState = SEARCHING;
-uint8_t carMac[6];
+uint8_t peerMac[6];
 const uint8_t broadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 // --- Telemetry Data ---
@@ -81,25 +82,27 @@ void onVideoFrame(uint8_t *buffer, size_t length) {
 
 // === ESP-NOW Data Received Callback (Handshake & Telemetry) ===
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
-    // 1. Handshake Logic
-    if (currentState == SEARCHING && len >= 9 && strncmp((const char*)data, "pyCAR_ACK", 9) == 0) {
-        memcpy(carMac, mac, 6);
-        
-        esp_now_peer_info_t peerInfo = {};
-        memcpy(peerInfo.peer_addr, carMac, 6);
-        peerInfo.channel = 1;
-        peerInfo.encrypt = false;
-        if(esp_now_is_peer_exist(carMac)) {
-             esp_now_mod_peer(&peerInfo);
-        } else {
-             esp_now_add_peer(&peerInfo);
+    // 1. Handshake Logic (Accepts PyCam and PyCar)
+    if (currentState == SEARCHING && len >= 9) {
+        if (strncmp((const char*)data, "pyCAR_ACK", 9) == 0 || strncmp((const char*)data, "pyCAM_ACK", 9) == 0) {
+            memcpy(peerMac, mac, 6);
+            
+            esp_now_peer_info_t peerInfo = {};
+            memcpy(peerInfo.peer_addr, peerMac, 6);
+            peerInfo.channel = 1;
+            peerInfo.encrypt = false;
+            if(esp_now_is_peer_exist(peerMac)) {
+                 esp_now_mod_peer(&peerInfo);
+            } else {
+                 esp_now_add_peer(&peerInfo);
+            }
+            
+            currentState = CONNECTED;
+            tft.fillScreen(TFT_BLACK); // Clear "Searching..." message
+            Serial.println("Paired to Peer!");
         }
-        
-        currentState = CONNECTED;
-        tft.fillScreen(TFT_BLACK); // Clear "Searching..." message
-        Serial.println("Paired to Car!");
     } 
-    // 2. Telemetry Parsing Logic
+    // 2. Telemetry Parsing Logic for PyCar
     else if (len > 3 && data[0] == 'D' && data[1] == ':') {
         char msg[64];
         int cpyLen = len < 63 ? len : 63;
@@ -113,7 +116,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     }
 }
 
-// --- Gamepad Reading Functions (Replaces psxcontroller.c) ---
+// --- Gamepad Reading Functions ---
 uint8_t getDPadAndButtons() {
     uint8_t keyByte5 = 8; // Default to "no action"
     bool up = !digitalRead(BTN_UP);
@@ -143,36 +146,33 @@ uint8_t getSystemButtons() {
 }
 
 uint8_t getAnalog(int channel) {
-    int val = analogRead(channel); // Reads ADC channel directly
-    return val / 16; // Map 12-bit (4095) down to 8-bit (255)
+    int val = analogRead(channel);
+    return val / 16; 
 }
 
 void setup() {
     Serial.begin(115200);
 
-    // --- Hardware Init ---
     const int buttons[] = {BTN_START, BTN_BACK, BTN_A_OK, BTN_B_OK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
     for (int pin : buttons) {
         pinMode(pin, INPUT_PULLUP);
     }
     
-    // --- Screen Init ---
     tft.init();
     tft.setRotation(0); 
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting Controller...", 20, 110, 4);
-
-    // --- Network Init ---
-    WiFi.mode(WIFI_STA);
-    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    
+    // The ESPNowCam/WiFiRawComm library handles all WiFi initialization internally.
+    radio.init(512); 
+    radio.setChannel(1);
 
     if (esp_now_init() != ESP_OK) {
         Serial.println("ESP-NOW Init Failed");
         return;
     }
     
-    // Register Broadcast peer for sending discovery pings
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, broadcastMac, 6);
     peerInfo.channel = 1;
@@ -181,39 +181,14 @@ void setup() {
     
     esp_now_register_recv_cb(onDataRecv);
 
-    // Start Raw Wi-Fi Video Receiver
-    radio.init(512); 
     // FIXED: Changed setReceiveCallback to setRecvCallback
     radio.setRecvCallback(onVideoFrame);
 
     tft.fillScreen(TFT_WHITE);
-    tft.drawString("Searching for Car...", 25, 110, 4);
+    tft.drawString("Searching PyCar/PyCam...", 10, 110, 2);
 }
 
 void loop() {
     unsigned long now = millis();
 
-    if (currentState == SEARCHING) {
-        // Send Discovery Ping every 250ms
-        if (now - lastDiscoveryTime > 250) {
-            const char* msg = "pyCAR_DISCOVER";
-            esp_now_send(broadcastMac, (uint8_t*)msg, strlen(msg));
-            lastDiscoveryTime = now;
-        }
-    } 
-    else if (currentState == CONNECTED) {
-        // Send Joystick Control Packets every 50ms (20Hz)
-        if (now - lastJoystickTime > 50) {
-            uint8_t lx = getAnalog(ADC_JOY_LX);
-            uint8_t ly = 255 - getAnalog(ADC_JOY_LY); 
-            uint8_t rx = getAnalog(ADC_JOY_RX);
-            uint8_t ry = 255 - getAnalog(ADC_JOY_RY); 
-            uint8_t byte5 = getDPadAndButtons();
-
-            uint8_t payload[6] = {67, lx, ly, rx, ry, byte5};
-            esp_now_send(carMac, payload, 6);
-            
-            lastJoystickTime = now;
-        }
-    }
-}
+    if (currentState == SEARC
