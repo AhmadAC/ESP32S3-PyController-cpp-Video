@@ -1,19 +1,16 @@
 // main/main.cpp
+// Replicating logic for the main/ directory to ensure update script succeeds
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
-
 #include <TFT_eSPI.h>
 #include <JPEGDEC.h>
 #include <WiFiRawComm.h>
 #include <ESPNowCam.h>
 
-// --- Gamepad Pinout ---
 #define BTN_START 0
 #define BTN_BACK  1
-#define BTN_A_OK  6
-#define BTN_B_OK  9
 #define BTN_UP    10
 #define BTN_DOWN  11
 #define BTN_LEFT  12
@@ -23,77 +20,51 @@
 #define BTN_A     16
 #define BTN_B     21
 
-// --- Analog Stick ADC Channels ---
 #define ADC_JOY_LX 3 
 #define ADC_JOY_LY 4 
 #define ADC_JOY_RX 6 
 #define ADC_JOY_RY 7 
 
-// --- Library Objects ---
 TFT_eSPI tft = TFT_eSPI();
 JPEGDEC jpeg;
 WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
-// FIXED: Define global buffer for the library
 uint8_t frame_buffer[65536];
+volatile bool hasNewFrame = false;
+volatile uint32_t latestFrameLength = 0;
 
-// --- State Management ---
 enum State { SEARCHING, CONNECTED };
 State currentState = SEARCHING;
-uint8_t peerMac[6];
+uint8_t carMac[6];
 const uint8_t broadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// --- Telemetry Data ---
 float currentDist = 0.0;
 bool lineFollowerActive = false;
-
-// --- Timers ---
 unsigned long lastDiscoveryTime = 0;
 unsigned long lastJoystickTime = 0;
 
-// === JPEG Drawing Callback ===
 int JPEGDraw(JPEGDRAW *pDraw) {
     tft.pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
-    return 1;
+    return 1; 
 }
 
-// === Raw Wi-Fi Video Frame Received Callback ===
 void onVideoFrame(uint32_t length) {
-    if (currentState != CONNECTED) return;
-    
-    if (jpeg.openRAM(frame_buffer, length, JPEGDraw)) {
-        jpeg.setPixelType(RGB565_BIG_ENDIAN); 
-        jpeg.decode(0, 0, 0);                 
-        jpeg.close();
-
-        tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.setTextDatum(TL_DATUM); 
-        tft.drawString("Dist: " + String(currentDist, 2) + " cm  ", 5, 220, 2);
-        
-        if (lineFollowerActive) {
-            tft.fillCircle(220, 20, 10, TFT_BLACK);
-        } else {
-            tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); 
-            tft.drawCircle(220, 20, 10, TFT_WHITE);
-        }
-    }
+    if (currentState != CONNECTED || hasNewFrame) return;
+    latestFrameLength = length;
+    hasNewFrame = true;
 }
 
-// === ESP-NOW Data Received Callback ===
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
-    if (currentState == SEARCHING && len >= 9) {
-        if (strncmp((const char*)data, "pyCAR_ACK", 9) == 0 || strncmp((const char*)data, "pyCAM_ACK", 9) == 0) {
-            memcpy(peerMac, mac, 6);
-            esp_now_peer_info_t peerInfo = {};
-            memcpy(peerInfo.peer_addr, peerMac, 6);
-            peerInfo.channel = 1;
-            peerInfo.encrypt = false;
-            if(esp_now_is_peer_exist(peerMac)) esp_now_mod_peer(&peerInfo);
-            else esp_now_add_peer(&peerInfo);
-            currentState = CONNECTED;
-            tft.fillScreen(TFT_BLACK);
-        }
+    if (currentState == SEARCHING && len >= 9 && strncmp((const char*)data, "pyCAR_ACK", 9) == 0) {
+        memcpy(carMac, mac, 6);
+        esp_now_peer_info_t peerInfo = {};
+        memcpy(peerInfo.peer_addr, carMac, 6);
+        peerInfo.channel = 1;
+        peerInfo.encrypt = false;
+        if (!esp_now_is_peer_exist(carMac)) esp_now_add_peer(&peerInfo);
+        currentState = CONNECTED;
+        tft.fillScreen(TFT_BLACK);
     } 
     else if (len > 3 && data[0] == 'D' && data[1] == ':') {
         char msg[64];
@@ -107,9 +78,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     }
 }
 
-uint8_t getAnalog(int channel) {
-    return analogRead(channel) / 16; 
-}
+uint8_t getAnalog(int channel) { return analogRead(channel) / 16; }
 
 uint8_t getDPadAndButtons() {
     uint8_t keyByte5 = 8;
@@ -130,45 +99,42 @@ uint8_t getDPadAndButtons() {
 
 void setup() {
     Serial.begin(115200);
-    const int buttons[] = {BTN_START, BTN_BACK, BTN_A_OK, BTN_B_OK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
+    const int buttons[] = {BTN_START, BTN_BACK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
     for (int pin : buttons) pinMode(pin, INPUT_PULLUP);
     tft.init();
     tft.setRotation(0); 
     tft.fillScreen(TFT_WHITE);
-    tft.setTextColor(TFT_BLACK, TFT_WHITE);
-    tft.drawString("Booting Controller...", 20, 110, 4);
-    
-    radio.setRecvBuffer(frame_buffer);
-    radio.setRecvCallback(onVideoFrame);
-    radio.init(512); 
-    radio.setChannel(1);
-
-    if (esp_now_init() != ESP_OK) return;
-    
+    WiFi.mode(WIFI_STA);
+    esp_now_init();
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, broadcastMac, 6);
     peerInfo.channel = 1;
-    peerInfo.encrypt = false;
     esp_now_add_peer(&peerInfo);
     esp_now_register_recv_cb(onDataRecv);
-
-    tft.fillScreen(TFT_WHITE);
-    tft.drawString("Searching PyCar/PyCam...", 10, 110, 2);
+    radio.setRecvBuffer(frame_buffer); 
+    radio.setRecvCallback(onVideoFrame);
+    radio.init(240); 
 }
 
 void loop() {
     unsigned long now = millis();
-    if (currentState == SEARCHING) {
-        if (now - lastDiscoveryTime > 250) {
-            esp_now_send(broadcastMac, (uint8_t*)"pyCAR_DISCOVER", 14);
-            lastDiscoveryTime = now;
+    if (hasNewFrame) {
+        if (jpeg.openRAM(frame_buffer, latestFrameLength, JPEGDraw)) {
+            jpeg.setPixelType(RGB565_BIG_ENDIAN); 
+            jpeg.decode(0, 0, 0);                 
+            jpeg.close();
+            tft.setTextColor(TFT_GREEN, TFT_BLACK);
+            tft.drawString("Dist: " + String(currentDist, 1) + "cm", 5, 220, 2);
         }
+        hasNewFrame = false;
+    }
+    if (currentState == SEARCHING && now - lastDiscoveryTime > 500) {
+        esp_now_send(broadcastMac, (uint8_t*)"pyCAR_DISCOVER", 14);
+        lastDiscoveryTime = now;
     } 
-    else if (currentState == CONNECTED) {
-        if (now - lastJoystickTime > 50) {
-            uint8_t payload[6] = {67, getAnalog(ADC_JOY_LX), (uint8_t)(255 - getAnalog(ADC_JOY_LY)), getAnalog(ADC_JOY_RX), (uint8_t)(255 - getAnalog(ADC_JOY_RY)), getDPadAndButtons()};
-            esp_now_send(peerMac, payload, 6);
-            lastJoystickTime = now;
-        }
+    else if (currentState == CONNECTED && now - lastJoystickTime > 50) {
+        uint8_t payload[6] = {67, getAnalog(ADC_JOY_LX), (uint8_t)(255 - getAnalog(ADC_JOY_LY)), getAnalog(ADC_JOY_RX), (uint8_t)(255 - getAnalog(ADC_JOY_RY)), getDPadAndButtons()};
+        esp_now_send(carMac, payload, 6);
+        lastJoystickTime = now;
     }
 }
