@@ -8,7 +8,7 @@
 #include <WiFiRawComm.h>
 #include <ESPNowCam.h>
 
-// --- Gamepad Pinout (From your mpconfigboard.h) ---
+// --- Gamepad Pinout (from your mpconfigboard.h) ---
 #define BTN_START 0
 #define BTN_BACK  1
 #define BTN_A_OK  6
@@ -22,149 +22,148 @@
 #define BTN_A     16
 #define BTN_B     21
 
-// --- Analog Stick Pinout ---
-#define PIN_JOY_LX 4 // ADC1_CH3
-#define PIN_JOY_LY 5 // ADC1_CH4
-#define PIN_JOY_RX 7 // ADC1_CH6
-#define PIN_JOY_RY 8 // ADC1_CH7
+// --- Analog Stick ADC Channels (from your mpconfigboard.h) ---
+#define ADC_JOY_LX 3 // ADC1_CHANNEL_3 -> GPIO 4
+#define ADC_JOY_LY 4 // ADC1_CHANNEL_4 -> GPIO 5
+#define ADC_JOY_RX 6 // ADC1_CHANNEL_6 -> GPIO 7
+#define ADC_JOY_RY 7 // ADC1_CHANNEL_7 -> GPIO 8
 
+// --- Library Objects ---
 TFT_eSPI tft = TFT_eSPI();
 JPEGDEC jpeg;
-
 WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
-// Connection State
+// --- State Management ---
 enum State { SEARCHING, CONNECTED };
 State currentState = SEARCHING;
-uint8_t carMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+uint8_t carMac[6];
 const uint8_t broadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// Telemetry State
+// --- Telemetry Data ---
 float currentDist = 0.0;
 bool lineFollowerActive = false;
 
-// Timers
+// --- Timers ---
 unsigned long lastDiscoveryTime = 0;
 unsigned long lastJoystickTime = 0;
 
-// --- JPEG Drawing Callback ---
-// Called by JPEGDEC when a block of pixels is ready to draw
+// === JPEG Drawing Callback (High-Speed RAM to Screen) ===
 int JPEGDraw(JPEGDRAW *pDraw) {
     tft.pushImage(pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight, pDraw->pPixels);
-    return 1;
+    return 1; // Continue drawing
 }
 
-// --- Video Frame Received Callback ---
-// Called by ESPNowCam when a complete MJPEG chunk is fully assembled
+// === Raw Wi-Fi Video Frame Received Callback ===
 void onVideoFrame(uint8_t *buffer, size_t length) {
     if (currentState != CONNECTED) return;
     
-    // Decode and draw the frame directly to the TFT
+    // Decode the JPEG buffer directly from RAM and draw it using the JPEGDraw callback
     if (jpeg.openRAM(buffer, length, JPEGDraw)) {
         jpeg.setPixelType(RGB565_BIG_ENDIAN); // Match TFT_eSPI format
-        jpeg.decode(0, 0, 0);                 // Draw starting at X=0, Y=0
+        jpeg.decode(0, 0, 0);                 // Draw at x=0, y=0 with no scaling
         jpeg.close();
 
-        // Overlay Telemetry Text on top of the video
+        // --- Overlay Telemetry Text on top of the video feed ---
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.drawString("Dist: " + String(currentDist) + " cm", 5, 215, 2);
+        tft.setTextDatum(TL_DATUM); // Top-Left datum
+        tft.drawString("Dist: " + String(currentDist, 2) + " cm  ", 5, 220, 2);
         
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
+            // Erase previous circle if it was filled
+            tft.fillCircle(220, 20, 10, tft.getPixel(220, 20)); // "Erase" by drawing background color
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
     }
 }
 
-// --- ESP-NOW Telemetry & Handshake Callback ---
+// === ESP-NOW Data Received Callback (Handshake & Telemetry) ===
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
-    if (len >= 9 && strncmp((const char*)data, "pyCAR_ACK", 9) == 0) {
-        if (currentState == SEARCHING) {
-            memcpy(carMac, mac, 6);
-            
-            esp_now_peer_info_t peerInfo = {};
-            memcpy(peerInfo.peer_addr, carMac, 6);
-            peerInfo.channel = 1;
-            peerInfo.encrypt = false;
-            esp_now_add_peer(&peerInfo);
-            
-            currentState = CONNECTED;
-            tft.fillScreen(TFT_BLACK);
-            tft.setTextColor(TFT_GREEN, TFT_BLACK);
-            tft.drawString("Connected!", 60, 110, 4);
-            Serial.println("Paired to Car!");
-            delay(1000); // Briefly show connected screen
+    // 1. Handshake Logic
+    if (currentState == SEARCHING && len >= 9 && strncmp((const char*)data, "pyCAR_ACK", 9) == 0) {
+        memcpy(carMac, mac, 6);
+        
+        esp_now_peer_info_t peerInfo = {};
+        memcpy(peerInfo.peer_addr, carMac, 6);
+        peerInfo.channel = 1;
+        peerInfo.encrypt = false;
+        if(esp_now_is_peer_exist(carMac)) {
+             esp_now_mod_peer(&peerInfo);
+        } else {
+             esp_now_add_peer(&peerInfo);
         }
+        
+        currentState = CONNECTED;
+        tft.fillScreen(TFT_BLACK); // Clear "Searching..." message
+        Serial.println("Paired to Car!");
     } 
-    else if (data[0] == 'D' && data[1] == ':') {
-        // Parse "D:xx.xx,L:x,X:0" Telemetry string
+    // 2. Telemetry Parsing Logic
+    else if (len > 3 && data[0] == 'D' && data[1] == ':') {
         char msg[64];
         int cpyLen = len < 63 ? len : 63;
         memcpy(msg, data, cpyLen);
-        msg[cpyLen] = '\0';
+        msg[cpyLen] = '\0'; // Null-terminate
         
         char* d_ptr = strstr(msg, "D:");
         char* l_ptr = strstr(msg, "L:");
-        if(d_ptr) currentDist = atof(d_ptr + 2);
-        if(l_ptr) lineFollowerActive = (l_ptr[2] == '1');
+        if (d_ptr) currentDist = atof(d_ptr + 2);
+        if (l_ptr) lineFollowerActive = (l_ptr[2] == '1');
     }
 }
 
-// --- Gamepad Mapping Logic ---
-uint8_t getDPad() {
+// --- Gamepad Reading Functions (Replaces psxcontroller.c) ---
+uint8_t getDPadAndButtons() {
+    uint8_t keyByte5 = 8; // Default to "no action"
     bool up = !digitalRead(BTN_UP);
     bool down = !digitalRead(BTN_DOWN);
     bool left = !digitalRead(BTN_LEFT);
     bool right = !digitalRead(BTN_RIGHT);
 
-    if (up && right) return 1;
-    if (right && !down && !up) return 2;
-    if (down && right) return 3;
-    if (down && !left && !right) return 4;
-    if (down && left) return 5;
-    if (left && !up && !down) return 6;
-    if (up && left) return 7;
-    if (up && !left && !right) return 0;
-    return 8; // None pressed
+    if (up) keyByte5 = (right) ? 1 : (left) ? 7 : 0;
+    else if (down) keyByte5 = (right) ? 3 : (left) ? 5 : 4;
+    else if (right) keyByte5 = 2;
+    else if (left) keyByte5 = 6;
+    
+    if (!digitalRead(BTN_Y)) keyByte5 |= (1 << 4);
+    if (!digitalRead(BTN_B)) keyByte5 |= (1 << 5);
+    if (!digitalRead(BTN_A)) keyByte5 |= (1 << 6);
+    if (!digitalRead(BTN_X)) keyByte5 |= (1 << 7);
+    return keyByte5;
 }
 
-uint8_t getButtons() {
-    uint8_t btns = getDPad();
-    if (!digitalRead(BTN_Y)) btns |= (1 << 4);
-    if (!digitalRead(BTN_B)) btns |= (1 << 5);
-    if (!digitalRead(BTN_A)) btns |= (1 << 6);
-    if (!digitalRead(BTN_X)) btns |= (1 << 7);
-    return btns;
+uint8_t getSystemButtons() {
+    uint8_t keyByte6 = 0;
+    if (!digitalRead(BTN_BACK)) keyByte6 |= (1 << 4);
+    if (!digitalRead(BTN_START)) keyByte6 |= (1 << 5);
+    if (!digitalRead(BTN_B_OK)) keyByte6 |= (1 << 6);
+    if (!digitalRead(BTN_A_OK)) keyByte6 |= (1 << 7);
+    return keyByte6;
 }
 
-uint8_t getAnalog(int pin) {
-    int val = analogRead(pin);
-    int mapped = val / 16; // Map 12-bit (4095) down to 8-bit (255)
-    return (mapped > 255) ? 255 : mapped;
+uint8_t getAnalog(int channel) {
+    int val = analogRead(channel); // Reads ADC channel directly
+    return val / 16; // Map 12-bit (4095) down to 8-bit (255)
 }
 
 void setup() {
     Serial.begin(115200);
 
-    // Setup Buttons
+    // --- Hardware Init (replaces psxcontroller.c logic) ---
     const int buttons[] = {BTN_START, BTN_BACK, BTN_A_OK, BTN_B_OK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
     for (int pin : buttons) {
         pinMode(pin, INPUT_PULLUP);
     }
     
-    // Setup ADC
-    analogReadResolution(12);
-
-    // Setup Screen
+    // --- Screen Init (replaces modtftlcd.c and ST7789.c) ---
     tft.init();
     tft.setRotation(0); 
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
-    tft.drawString("Booting C++...", 60, 110, 4);
+    tft.drawString("Booting Controller...", 20, 110, 4);
 
-    // Setup Network
+    // --- Network Init ---
     WiFi.mode(WIFI_STA);
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
 
@@ -173,7 +172,7 @@ void setup() {
         return;
     }
     
-    // Register Broadcast peer for discovery
+    // Register Broadcast peer for sending discovery pings
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, broadcastMac, 6);
     peerInfo.channel = 1;
@@ -183,11 +182,11 @@ void setup() {
     esp_now_register_recv_cb(onDataRecv);
 
     // Start Raw Wi-Fi Video Receiver
-    radio.init(512); 
+    radio.init(512); // Standard chunk size
     radio.setReceiveCallback(onVideoFrame);
 
     tft.fillScreen(TFT_WHITE);
-    tft.drawString("Searching for pyCar...", 30, 110, 4);
+    tft.drawString("Searching for Car...", 25, 110, 4);
 }
 
 void loop() {
@@ -204,14 +203,17 @@ void loop() {
     else if (currentState == CONNECTED) {
         // Send Joystick Control Packets every 50ms (20Hz)
         if (now - lastJoystickTime > 50) {
-            uint8_t lx = getAnalog(PIN_JOY_LX);
-            uint8_t ly = getAnalog(PIN_JOY_LY);
-            uint8_t rx = getAnalog(PIN_JOY_RX);
-            uint8_t ry = getAnalog(PIN_JOY_RY);
-            uint8_t btns = getButtons();
+            uint8_t lx = getAnalog(ADC_JOY_LX);
+            uint8_t ly = 255 - getAnalog(ADC_JOY_LY); // Y-axis is often inverted
+            uint8_t rx = getAnalog(ADC_JOY_RX);
+            uint8_t ry = 255 - getAnalog(ADC_JOY_RY); // Y-axis is often inverted
+            uint8_t byte5 = getDPadAndButtons();
+            uint8_t byte6 = getSystemButtons();
 
-            // Structure matches your Python: struct.pack('<BBBBBB', 67, lx, ly, rx, ry, btns)
-            uint8_t payload[6] = {67, lx, ly, rx, ry, btns};
+            // Your car expects a payload starting with 67, let's keep that format for now.
+            // Matching: struct.pack('<BBBBBB', 67, lx, ly, rx, ry, byte5)
+            // Note: Your python code was only sending byte5, so we will do the same.
+            uint8_t payload[6] = {67, lx, ly, rx, ry, byte5};
             esp_now_send(carMac, payload, 6);
             
             lastJoystickTime = now;
