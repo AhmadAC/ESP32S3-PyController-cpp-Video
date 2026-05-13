@@ -113,7 +113,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     }
 }
 
-// --- Gamepad Reading Functions ---
+// --- Gamepad Reading Functions (Replaces psxcontroller.c) ---
 uint8_t getDPadAndButtons() {
     uint8_t keyByte5 = 8; // Default to "no action"
     bool up = !digitalRead(BTN_UP);
@@ -143,24 +143,27 @@ uint8_t getSystemButtons() {
 }
 
 uint8_t getAnalog(int channel) {
-    int val = analogRead(channel); 
-    return val / 16; 
+    int val = analogRead(channel); // Reads ADC channel directly
+    return val / 16; // Map 12-bit (4095) down to 8-bit (255)
 }
 
 void setup() {
     Serial.begin(115200);
 
+    // --- Hardware Init ---
     const int buttons[] = {BTN_START, BTN_BACK, BTN_A_OK, BTN_B_OK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
     for (int pin : buttons) {
         pinMode(pin, INPUT_PULLUP);
     }
     
+    // --- Screen Init ---
     tft.init();
     tft.setRotation(0); 
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting Controller...", 20, 110, 4);
 
+    // --- Network Init ---
     WiFi.mode(WIFI_STA);
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
 
@@ -169,6 +172,7 @@ void setup() {
         return;
     }
     
+    // Register Broadcast peer for sending discovery pings
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, broadcastMac, 6);
     peerInfo.channel = 1;
@@ -179,7 +183,7 @@ void setup() {
 
     // Start Raw Wi-Fi Video Receiver
     radio.init(512); 
-    // FIXED: Correct method name for library version 0.2.1
+    // FIXED: Changed setReceiveCallback to setRecvCallback
     radio.setRecvCallback(onVideoFrame);
 
     tft.fillScreen(TFT_WHITE);
@@ -190,6 +194,7 @@ void loop() {
     unsigned long now = millis();
 
     if (currentState == SEARCHING) {
+        // Send Discovery Ping every 250ms
         if (now - lastDiscoveryTime > 250) {
             const char* msg = "pyCAR_DISCOVER";
             esp_now_send(broadcastMac, (uint8_t*)msg, strlen(msg));
@@ -197,6 +202,7 @@ void loop() {
         }
     } 
     else if (currentState == CONNECTED) {
+        // Send Joystick Control Packets every 50ms (20Hz)
         if (now - lastJoystickTime > 50) {
             uint8_t lx = getAnalog(ADC_JOY_LX);
             uint8_t ly = 255 - getAnalog(ADC_JOY_LY); 
