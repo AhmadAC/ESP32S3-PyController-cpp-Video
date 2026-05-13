@@ -38,7 +38,7 @@ ESPNowCam radio(&wifiRaw);
 // --- State Management ---
 enum State { SEARCHING, CONNECTED };
 State currentState = SEARCHING;
-uint8_t carMac[6];
+uint8_t peerMac[6];
 const uint8_t broadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 // --- Telemetry Data ---
@@ -56,17 +56,15 @@ int JPEGDraw(JPEGDRAW *pDraw) {
 }
 
 // === Raw Wi-Fi Video Frame Received Callback ===
-// FIXED: Signature changed to match EspNowCam RecvCb (only takes length)
 void onVideoFrame(size_t length) {
     if (currentState != CONNECTED) return;
     
-    // FIXED: Retrieve the buffer pointer from the library
-    uint8_t *buffer = radio.getFrameBuffer();
+    // FIXED: getFrame() is the correct method for EspNowCam v0.2.1
+    uint8_t *buffer = radio.getFrame();
     
-    // Decode the JPEG buffer directly from RAM
     if (jpeg.openRAM(buffer, length, JPEGDraw)) {
-        jpeg.setPixelType(RGB565_BIG_ENDIAN); // Match TFT_eSPI format
-        jpeg.decode(0, 0, 0);                 // Draw at x=0, y=0 with no scaling
+        jpeg.setPixelType(RGB565_BIG_ENDIAN); 
+        jpeg.decode(0, 0, 0);                 
         jpeg.close();
 
         // --- Overlay Telemetry Text on top of the video feed ---
@@ -77,7 +75,7 @@ void onVideoFrame(size_t length) {
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
-            // FIXED: Changed getPixel to readPixel per compiler suggestion
+            // FIXED: readPixel is the correct method for TFT_eSPI
             tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); 
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
@@ -86,31 +84,23 @@ void onVideoFrame(size_t length) {
 
 // === ESP-NOW Data Received Callback (Handshake & Telemetry) ===
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
-    // 1. Handshake Logic
     if (currentState == SEARCHING && len >= 9 && strncmp((const char*)data, "pyCAR_ACK", 9) == 0) {
-        memcpy(carMac, mac, 6);
-        
+        memcpy(peerMac, mac, 6);
         esp_now_peer_info_t peerInfo = {};
-        memcpy(peerInfo.peer_addr, carMac, 6);
+        memcpy(peerInfo.peer_addr, peerMac, 6);
         peerInfo.channel = 1;
         peerInfo.encrypt = false;
-        if(esp_now_is_peer_exist(carMac)) {
-             esp_now_mod_peer(&peerInfo);
-        } else {
-             esp_now_add_peer(&peerInfo);
-        }
-        
+        if(esp_now_is_peer_exist(peerMac)) esp_now_mod_peer(&peerInfo);
+        else esp_now_add_peer(&peerInfo);
         currentState = CONNECTED;
-        tft.fillScreen(TFT_BLACK); 
+        tft.fillScreen(TFT_BLACK);
         Serial.println("Paired to Car!");
     } 
-    // 2. Telemetry Parsing Logic
     else if (len > 3 && data[0] == 'D' && data[1] == ':') {
         char msg[64];
         int cpyLen = len < 63 ? len : 63;
         memcpy(msg, data, cpyLen);
-        msg[cpyLen] = '\0'; 
-        
+        msg[cpyLen] = '\0';
         char* d_ptr = strstr(msg, "D:");
         char* l_ptr = strstr(msg, "L:");
         if (d_ptr) currentDist = atof(d_ptr + 2);
@@ -118,19 +108,16 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     }
 }
 
-// --- Gamepad Reading Functions ---
 uint8_t getDPadAndButtons() {
-    uint8_t keyByte5 = 8; 
+    uint8_t keyByte5 = 8;
     bool up = !digitalRead(BTN_UP);
     bool down = !digitalRead(BTN_DOWN);
     bool left = !digitalRead(BTN_LEFT);
     bool right = !digitalRead(BTN_RIGHT);
-
     if (up) keyByte5 = (right) ? 1 : (left) ? 7 : 0;
     else if (down) keyByte5 = (right) ? 3 : (left) ? 5 : 4;
     else if (right) keyByte5 = 2;
     else if (left) keyByte5 = 6;
-    
     if (!digitalRead(BTN_Y)) keyByte5 |= (1 << 4);
     if (!digitalRead(BTN_B)) keyByte5 |= (1 << 5);
     if (!digitalRead(BTN_A)) keyByte5 |= (1 << 6);
@@ -138,79 +125,46 @@ uint8_t getDPadAndButtons() {
     return keyByte5;
 }
 
-uint8_t getSystemButtons() {
-    uint8_t keyByte6 = 0;
-    if (!digitalRead(BTN_BACK)) keyByte6 |= (1 << 4);
-    if (!digitalRead(BTN_START)) keyByte6 |= (1 << 5);
-    if (!digitalRead(BTN_B_OK)) keyByte6 |= (1 << 6);
-    if (!digitalRead(BTN_A_OK)) keyByte6 |= (1 << 7);
-    return keyByte6;
-}
-
 uint8_t getAnalog(int channel) {
-    int val = analogRead(channel); 
-    return val / 16; 
+    return analogRead(channel) / 16; 
 }
 
 void setup() {
     Serial.begin(115200);
-
     const int buttons[] = {BTN_START, BTN_BACK, BTN_A_OK, BTN_B_OK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
-    for (int pin : buttons) {
-        pinMode(pin, INPUT_PULLUP);
-    }
-    
+    for (int pin : buttons) pinMode(pin, INPUT_PULLUP);
     tft.init();
     tft.setRotation(0); 
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting Controller...", 20, 110, 4);
-
     WiFi.mode(WIFI_STA);
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-
-    if (esp_now_init() != ESP_OK) {
-        Serial.println("ESP-NOW Init Failed");
-        return;
-    }
-    
+    if (esp_now_init() != ESP_OK) return;
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, broadcastMac, 6);
     peerInfo.channel = 1;
     peerInfo.encrypt = false;
     esp_now_add_peer(&peerInfo);
-    
     esp_now_register_recv_cb(onDataRecv);
-
     radio.init(512); 
-    // FIXED: RecvCallback takes function with (size_t) argument
     radio.setRecvCallback(onVideoFrame);
-
     tft.fillScreen(TFT_WHITE);
     tft.drawString("Searching for Car...", 25, 110, 4);
 }
 
 void loop() {
     unsigned long now = millis();
-
     if (currentState == SEARCHING) {
         if (now - lastDiscoveryTime > 250) {
-            const char* msg = "pyCAR_DISCOVER";
-            esp_now_send(broadcastMac, (uint8_t*)msg, strlen(msg));
+            esp_now_send(broadcastMac, (uint8_t*)"pyCAR_DISCOVER", 14);
             lastDiscoveryTime = now;
         }
     } 
     else if (currentState == CONNECTED) {
         if (now - lastJoystickTime > 50) {
-            uint8_t lx = getAnalog(ADC_JOY_LX);
-            uint8_t ly = 255 - getAnalog(ADC_JOY_LY); 
-            uint8_t rx = getAnalog(ADC_JOY_RX);
-            uint8_t ry = 255 - getAnalog(ADC_JOY_RY); 
-            uint8_t byte5 = getDPadAndButtons();
-
-            uint8_t payload[6] = {67, lx, ly, rx, ry, byte5};
-            esp_now_send(carMac, payload, 6);
-            
+            uint8_t payload[6] = {67, getAnalog(ADC_JOY_LX), (uint8_t)(255 - getAnalog(ADC_JOY_LY)), getAnalog(ADC_JOY_RX), (uint8_t)(255 - getAnalog(ADC_JOY_RY)), getDPadAndButtons()};
+            esp_now_send(peerMac, payload, 6);
             lastJoystickTime = now;
         }
     }
