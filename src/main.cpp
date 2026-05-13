@@ -34,8 +34,8 @@ WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
 // --- Video Buffer & Flags ---
-// --- CRITICAL FIX #2: Reduced buffer size to leave RAM for the JPEG decoder ---
-const int FRAME_BUFFER_SIZE = 20480; // Reduced from 32768 (32KB) to 20KB
+// Reduced buffer size to 20KB to leave more free RAM for the JPEG decoder library.
+const int FRAME_BUFFER_SIZE = 20480; 
 uint8_t *frame_buffer = nullptr; // Will be allocated on the heap
 
 volatile bool hasNewFrame = false;
@@ -135,9 +135,7 @@ void setup() {
 
     Serial.printf("Initial Free Heap: %d bytes\n", ESP.getFreeHeap());
 
-    // --- CRITICAL FIX: Allocate frame buffer from DMA-capable memory ---
-    // This ensures that drivers that use DMA can access this buffer correctly.
-    // We also explicitly check if the allocation succeeded.
+    // Allocate frame buffer from DMA-capable memory
     frame_buffer = (uint8_t *)heap_caps_malloc(FRAME_BUFFER_SIZE, MALLOC_CAP_DMA);
 
     if (!frame_buffer) {
@@ -185,3 +183,46 @@ void loop() {
         if (!esp_now_is_peer_exist(carMac)) {
             esp_now_add_peer(&peerInfo);
         }
+        currentState = CONNECTED;
+        tft.fillScreen(TFT_BLACK);
+        Serial.println("Paired with Car!");
+    }
+
+    // 2. Process Video Frame if one has arrived
+    if (hasNewFrame) {
+        hasNewFrame = false; // Reset flag immediately
+        if (currentState == CONNECTED) {
+            if (jpeg.openRAM(frame_buffer, latestFrameLength, JPEGDraw)) {
+                jpeg.setPixelType(RGB565_BIG_ENDIAN);
+                jpeg.decode(0, 0, 0);
+                jpeg.close();
+
+                // Draw Telemetry Overlay
+                tft.setTextColor(TFT_GREEN, TFT_BLACK);
+                tft.drawString("Dist: " + String(currentDist, 1) + "cm", 5, 220, 2);
+            }
+        }
+    }
+
+    // 3. Handle state-based actions (Discovery or Sending Controls)
+    if (currentState == SEARCHING) {
+        if (now - lastDiscoveryTime > 500) {
+            esp_now_send(broadcastMac, (uint8_t*)"pyCAR_DISCOVER", 14);
+            lastDiscoveryTime = now;
+        }
+    }
+    else if (currentState == CONNECTED) {
+        if (now - lastJoystickTime > 50) {
+            uint8_t payload[6] = {
+                67, // Header byte
+                getAnalog(ADC_JOY_LX),
+                (uint8_t)(255 - getAnalog(ADC_JOY_LY)), // Invert Y-axis
+                getAnalog(ADC_JOY_RX),
+                (uint8_t)(255 - getAnalog(ADC_JOY_RY)), // Invert Y-axis
+                getDPadAndButtons()
+            };
+            esp_now_send(carMac, payload, sizeof(payload));
+            lastJoystickTime = now;
+        }
+    }
+}
