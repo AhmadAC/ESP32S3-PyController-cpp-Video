@@ -88,10 +88,10 @@ uint8_t encodeButtons() {
     uint8_t btns = dpad;
     
     // Action Buttons
-    if (!digitalRead(BTN_A)) btns |= (1 << 6);
-    if (!digitalRead(BTN_B)) btns |= (1 << 5);
-    if (!digitalRead(BTN_X)) btns |= (1 << 7);
-    if (!digitalRead(BTN_Y)) btns |= (1 << 4);
+    if (!digitalRead(BTN_A)) btns |= 0x10; // A toggles line follower
+    if (!digitalRead(BTN_B)) btns |= 0x20; // B toggles headlights
+    if (!digitalRead(BTN_X)) btns |= 0x40;
+    if (!digitalRead(BTN_Y)) btns |= 0x80;
 
     return btns;
 }
@@ -117,12 +117,14 @@ void setup() {
     Serial.println("\n[1/4] Starting Display...");
     tft.init();
     tft.setRotation(0);
-    tft.fillScreen(TFT_WHITE);
-    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
     
-    // Draw initial text (requires LOAD_FONT2 in platformio.ini)
-    tft.drawCentreString("PYCONTROLLER S3", 120, 10, 2);
-    tft.drawCentreString("Initializing WiFi...", 120, 40, 2);
+    // Use safe built-in font drawing
+    tft.setTextSize(2);
+    tft.setCursor(10, 10);
+    tft.println("pyController S3");
+    tft.println("Starting...");
 
     Serial.println("[2/4] Initializing WiFi...");
     WiFi.mode(WIFI_STA);
@@ -178,8 +180,9 @@ void loop() {
         if (now - lastSearch > 1500) {
             esp_now_send(broadcastMac, (uint8_t*)"pyCAR_DISCOVER", 14);
             lastSearch = now;
-            tft.setTextColor(TFT_WHITE, TFT_BLACK);
-            tft.drawCentreString("SEARCHING FOR CAR...", 120, 110, 2);
+            
+            tft.setCursor(10, 110);
+            tft.print("Searching for Car... ");
         }
     } else {
         // 3. Send Gamepad Data (~20Hz)
