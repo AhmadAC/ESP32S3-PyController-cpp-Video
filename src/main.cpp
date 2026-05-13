@@ -56,10 +56,14 @@ int JPEGDraw(JPEGDRAW *pDraw) {
 }
 
 // === Raw Wi-Fi Video Frame Received Callback ===
-void onVideoFrame(uint8_t *buffer, size_t length) {
+// FIXED: Signature changed to match EspNowCam RecvCb (only takes length)
+void onVideoFrame(size_t length) {
     if (currentState != CONNECTED) return;
     
-    // Decode the JPEG buffer directly from RAM and draw it using the JPEGDraw callback
+    // FIXED: Retrieve the buffer pointer from the library
+    uint8_t *buffer = radio.getFrameBuffer();
+    
+    // Decode the JPEG buffer directly from RAM
     if (jpeg.openRAM(buffer, length, JPEGDraw)) {
         jpeg.setPixelType(RGB565_BIG_ENDIAN); // Match TFT_eSPI format
         jpeg.decode(0, 0, 0);                 // Draw at x=0, y=0 with no scaling
@@ -67,14 +71,14 @@ void onVideoFrame(uint8_t *buffer, size_t length) {
 
         // --- Overlay Telemetry Text on top of the video feed ---
         tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.setTextDatum(TL_DATUM); // Top-Left datum
+        tft.setTextDatum(TL_DATUM); 
         tft.drawString("Dist: " + String(currentDist, 2) + " cm  ", 5, 220, 2);
         
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
-            // FIXED: Changed getPixel to readPixel
-            tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); // "Erase" by drawing background color
+            // FIXED: Changed getPixel to readPixel per compiler suggestion
+            tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); 
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
     }
@@ -97,7 +101,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
         }
         
         currentState = CONNECTED;
-        tft.fillScreen(TFT_BLACK); // Clear "Searching..." message
+        tft.fillScreen(TFT_BLACK); 
         Serial.println("Paired to Car!");
     } 
     // 2. Telemetry Parsing Logic
@@ -105,7 +109,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
         char msg[64];
         int cpyLen = len < 63 ? len : 63;
         memcpy(msg, data, cpyLen);
-        msg[cpyLen] = '\0'; // Null-terminate
+        msg[cpyLen] = '\0'; 
         
         char* d_ptr = strstr(msg, "D:");
         char* l_ptr = strstr(msg, "L:");
@@ -114,9 +118,9 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     }
 }
 
-// --- Gamepad Reading Functions (Replaces psxcontroller.c) ---
+// --- Gamepad Reading Functions ---
 uint8_t getDPadAndButtons() {
-    uint8_t keyByte5 = 8; // Default to "no action"
+    uint8_t keyByte5 = 8; 
     bool up = !digitalRead(BTN_UP);
     bool down = !digitalRead(BTN_DOWN);
     bool left = !digitalRead(BTN_LEFT);
@@ -144,27 +148,24 @@ uint8_t getSystemButtons() {
 }
 
 uint8_t getAnalog(int channel) {
-    int val = analogRead(channel); // Reads ADC channel directly
-    return val / 16; // Map 12-bit (4095) down to 8-bit (255)
+    int val = analogRead(channel); 
+    return val / 16; 
 }
 
 void setup() {
     Serial.begin(115200);
 
-    // --- Hardware Init (replaces psxcontroller.c logic) ---
     const int buttons[] = {BTN_START, BTN_BACK, BTN_A_OK, BTN_B_OK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
     for (int pin : buttons) {
         pinMode(pin, INPUT_PULLUP);
     }
     
-    // --- Screen Init (replaces modtftlcd.c and ST7789.c) ---
     tft.init();
     tft.setRotation(0); 
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting Controller...", 20, 110, 4);
 
-    // --- Network Init ---
     WiFi.mode(WIFI_STA);
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
 
@@ -173,7 +174,6 @@ void setup() {
         return;
     }
     
-    // Register Broadcast peer for sending discovery pings
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, broadcastMac, 6);
     peerInfo.channel = 1;
@@ -182,9 +182,8 @@ void setup() {
     
     esp_now_register_recv_cb(onDataRecv);
 
-    // Start Raw Wi-Fi Video Receiver
-    radio.init(512); // Standard chunk size
-    // FIXED: Changed setReceiveCallback to setRecvCallback
+    radio.init(512); 
+    // FIXED: RecvCallback takes function with (size_t) argument
     radio.setRecvCallback(onVideoFrame);
 
     tft.fillScreen(TFT_WHITE);
@@ -195,7 +194,6 @@ void loop() {
     unsigned long now = millis();
 
     if (currentState == SEARCHING) {
-        // Send Discovery Ping every 250ms
         if (now - lastDiscoveryTime > 250) {
             const char* msg = "pyCAR_DISCOVER";
             esp_now_send(broadcastMac, (uint8_t*)msg, strlen(msg));
@@ -203,14 +201,12 @@ void loop() {
         }
     } 
     else if (currentState == CONNECTED) {
-        // Send Joystick Control Packets every 50ms (20Hz)
         if (now - lastJoystickTime > 50) {
             uint8_t lx = getAnalog(ADC_JOY_LX);
-            uint8_t ly = 255 - getAnalog(ADC_JOY_LY); // Y-axis is often inverted
+            uint8_t ly = 255 - getAnalog(ADC_JOY_LY); 
             uint8_t rx = getAnalog(ADC_JOY_RX);
-            uint8_t ry = 255 - getAnalog(ADC_JOY_RY); // Y-axis is often inverted
+            uint8_t ry = 255 - getAnalog(ADC_JOY_RY); 
             uint8_t byte5 = getDPadAndButtons();
-            uint8_t byte6 = getSystemButtons();
 
             uint8_t payload[6] = {67, lx, ly, rx, ry, byte5};
             esp_now_send(carMac, payload, 6);
