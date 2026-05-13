@@ -55,13 +55,12 @@ int JPEGDraw(JPEGDRAW *pDraw) {
     return 1;
 }
 
-// === Video Frame Callback ===
-// FIXED: Signature changed to match EspNowCam RecvCb (size_t only)
+// === Raw Wi-Fi Video Frame Received Callback ===
 void onVideoFrame(size_t length) {
     if (currentState != CONNECTED) return;
     
-    // FIXED: Get buffer from library
-    uint8_t *buffer = radio.getFrameBuffer();
+    // FIXED: getFrame() is the correct method for EspNowCam v0.2.1
+    uint8_t *buffer = radio.getFrame();
     
     if (jpeg.openRAM(buffer, length, JPEGDraw)) {
         jpeg.setPixelType(RGB565_BIG_ENDIAN); 
@@ -134,27 +133,21 @@ void setup() {
     Serial.begin(115200);
     const int buttons[] = {BTN_START, BTN_BACK, BTN_A_OK, BTN_B_OK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
     for (int pin : buttons) pinMode(pin, INPUT_PULLUP);
-    
     tft.init();
     tft.setRotation(0); 
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting Controller...", 20, 110, 4);
-    
     radio.init(512); 
     radio.setChannel(1);
     if (esp_now_init() != ESP_OK) return;
-    
     esp_now_peer_info_t peerInfo = {};
     memcpy(peerInfo.peer_addr, broadcastMac, 6);
     peerInfo.channel = 1;
     peerInfo.encrypt = false;
     esp_now_add_peer(&peerInfo);
     esp_now_register_recv_cb(onDataRecv);
-
-    // FIXED: setRecvCallback
     radio.setRecvCallback(onVideoFrame);
-
     tft.fillScreen(TFT_WHITE);
     tft.drawString("Searching PyCar/PyCam...", 10, 110, 2);
 }
