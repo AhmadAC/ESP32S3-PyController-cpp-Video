@@ -34,8 +34,8 @@ WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
 // --- Video Buffer & Flags ---
-const int FRAME_BUFFER_SIZE = 20480; // 20KB for 160x120 resolution
-// CRITICAL FIX: Statically allocating the buffer prevents runtime RAM panics
+const int FRAME_BUFFER_SIZE = 20480; // 20KB
+// Statically allocated to ensure it fits in internal RAM on N8 (No PSRAM) board
 uint8_t frame_buffer[FRAME_BUFFER_SIZE]; 
 
 volatile bool hasNewFrame = false;
@@ -71,11 +71,8 @@ void onVideoFrame(uint32_t length) {
 }
 
 // === ESP-NOW Data Callback (SIGNAL ONLY) ===
-// CRITICAL FIX: ESP32 Arduino Core v3.0+ requires esp_now_recv_info_t. 
-// Using the old signature was causing the immediate StoreProhibited boot crash!
-void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
-    const uint8_t *mac = info->src_addr;
-
+// FIXED: Reverted to the traditional signature as required by your framework
+void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     if (currentState == SEARCHING && len >= 9 && strncmp((const char*)data, "pyCAR_ACK", 9) == 0) {
         memcpy(carMac, mac, 6);
         pairedFlag = true;
@@ -116,8 +113,7 @@ uint8_t getAnalog(int channel) {
 }
 
 void setup() {
-    // CRITICAL FIX: Give the S3 time to mount USB hardware before firing up the SPI screen
-    delay(2000); 
+    delay(2000); // Important for S3 stability on boot
     Serial.begin(115200);
 
     const int buttons[] = {BTN_START, BTN_BACK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
@@ -129,10 +125,7 @@ void setup() {
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting...", 10, 10, 2);
 
-    // Configure JPEG decoder for minimal memory usage
-    jpeg.setMaxOutputSize(1);
-
-    Serial.printf("Initial Free Heap: %d bytes\n", ESP.getFreeHeap());
+    jpeg.setMaxOutputSize(1); // Crucial for No-PSRAM boards
 
     WiFi.mode(WIFI_STA);
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
@@ -148,14 +141,12 @@ void setup() {
     peerInfo.encrypt = false;
     esp_now_add_peer(&peerInfo);
     
-    // Register the modern callback signature
+    // Register the callback
     esp_now_register_recv_cb(onDataRecv);
 
     radio.setRecvBuffer(frame_buffer);
     radio.setRecvCallback(onVideoFrame);
-    
-    // Set to 160 to match 160x120 resolution PyCam setup
-    radio.init(160);
+    radio.init(160); // Match 160x120 resolution
 
     tft.drawString("Searching for Car...", 10, 110, 2);
 }
