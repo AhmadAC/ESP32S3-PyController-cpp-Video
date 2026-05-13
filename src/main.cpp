@@ -3,6 +3,7 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+
 #include <TFT_eSPI.h>
 #include <JPEGDEC.h>
 #include <WiFiRawComm.h>
@@ -33,13 +34,15 @@ WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
 // --- Video Buffer & Flags ---
-uint8_t frame_buffer[65536];
+// Reduced to 32KB to prevent SRAM overflow on non-PSRAM board
+uint8_t frame_buffer[32768]; 
 volatile bool hasNewFrame = false;
 volatile uint32_t latestFrameLength = 0;
 
 // --- State Management ---
 enum State { SEARCHING, CONNECTED };
 State currentState = SEARCHING;
+volatile bool pairedFlag = false; // Flag to handle UI change in loop
 uint8_t carMac[6];
 const uint8_t broadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -57,24 +60,19 @@ int JPEGDraw(JPEGDRAW *pDraw) {
     return 1; 
 }
 
-// === Video Callback (Minimal Logic to avoid Stack Overflow) ===
+// === Video Callback (SIGNAL ONLY) ===
 void onVideoFrame(uint32_t length) {
     if (currentState != CONNECTED || hasNewFrame) return;
+    if (length > 32768) return; // Guard against buffer overflow
     latestFrameLength = length;
-    hasNewFrame = true; // Signal the loop to process this
+    hasNewFrame = true; 
 }
 
-// === ESP-NOW Data (Telemetry) ===
+// === ESP-NOW Data Callback (SIGNAL ONLY) ===
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     if (currentState == SEARCHING && len >= 9 && strncmp((const char*)data, "pyCAR_ACK", 9) == 0) {
         memcpy(carMac, mac, 6);
-        esp_now_peer_info_t peerInfo = {};
-        memcpy(peerInfo.peer_addr, carMac, 6);
-        peerInfo.channel = 1;
-        peerInfo.encrypt = false;
-        if (!esp_now_is_peer_exist(carMac)) esp_now_add_peer(&peerInfo);
-        currentState = CONNECTED;
-        tft.fillScreen(TFT_BLACK);
+        pairedFlag = true; // Signal main loop to handle the transition
     } 
     else if (len > 3 && data[0] == 'D' && data[1] == ':') {
         char msg[64];
@@ -134,8 +132,7 @@ void setup() {
 
     radio.setRecvBuffer(frame_buffer); 
     radio.setRecvCallback(onVideoFrame);
-    // FIXED: Reduced from 512 to 240 to prevent internal library buffer overflow
-    radio.init(240); 
+    radio.init(240); // Standard ESP-NOW MTU size is safe
 
     tft.drawString("Searching Car...", 10, 110, 2);
 }
@@ -143,30 +140,46 @@ void setup() {
 void loop() {
     unsigned long now = millis();
 
-    // 1. Process Video Frame (Done here in loop to prevent stack crashes)
-    if (hasNewFrame) {
+    // 1. Handle pairing transition (Done here instead of callback to prevent crash)
+    if (pairedFlag) {
+        esp_now_peer_info_t peerInfo = {};
+        memcpy(peerInfo.peer_addr, carMac, 6);
+        peerInfo.channel = 1;
+        peerInfo.encrypt = false;
+        if (!esp_now_is_peer_exist(carMac)) esp_now_add_peer(&peerInfo);
+        currentState = CONNECTED;
+        tft.fillScreen(TFT_BLACK);
+        Serial.println("Paired!");
+        pairedFlag = false;
+    }
+
+    // 2. Process Video Frame (Done here in loop to prevent stack crashes)
+    if (hasNewFrame && currentState == CONNECTED) {
         if (jpeg.openRAM(frame_buffer, latestFrameLength, JPEGDraw)) {
             jpeg.setPixelType(RGB565_BIG_ENDIAN); 
             jpeg.decode(0, 0, 0);                 
             jpeg.close();
 
-            // Overlay UI
+            // Telemetry Overlay
             tft.setTextColor(TFT_GREEN, TFT_BLACK);
             tft.drawString("Dist: " + String(currentDist, 1) + "cm", 5, 220, 2);
             if (lineFollowerActive) tft.fillCircle(220, 20, 10, TFT_BLACK);
-            else tft.drawCircle(220, 20, 10, TFT_WHITE);
+            else {
+                // Erase by using the actual pixel color behind the circle
+                tft.drawCircle(220, 20, 10, TFT_WHITE);
+            }
         }
         hasNewFrame = false;
     }
 
-    // 2. Discovery
+    // 3. Discovery Broadcast
     if (currentState == SEARCHING) {
         if (now - lastDiscoveryTime > 500) {
             esp_now_send(broadcastMac, (uint8_t*)"pyCAR_DISCOVER", 14);
             lastDiscoveryTime = now;
         }
     } 
-    // 3. Joystick Transmission
+    // 4. Joystick Control
     else if (currentState == CONNECTED) {
         if (now - lastJoystickTime > 50) {
             uint8_t payload[6] = {67, getAnalog(ADC_JOY_LX), (uint8_t)(255 - getAnalog(ADC_JOY_LY)), getAnalog(ADC_JOY_RX), (uint8_t)(255 - getAnalog(ADC_JOY_RY)), getDPadAndButtons()};
