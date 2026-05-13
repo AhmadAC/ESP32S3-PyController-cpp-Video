@@ -201,3 +201,14 @@ void loop() {
         if (now - lastJoystickTime > 50) {
             uint8_t payload[6] = {
                 67,
+                getAnalog(ADC_JOY_LX),
+                (uint8_t)(255 - getAnalog(ADC_JOY_LY)),
+                getAnalog(ADC_JOY_RX),
+                (uint8_t)(255 - getAnalog(ADC_JOY_RY)),
+                getDPadAndButtons()
+            };
+            esp_now_send(carMac, payload, sizeof(payload));
+            lastJoystickTime = now;
+        }
+    }
+}
