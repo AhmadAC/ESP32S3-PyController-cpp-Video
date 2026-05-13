@@ -35,9 +35,9 @@ JPEGDEC jpeg;
 WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
-// FIXED: Define a global buffer for the received video data
-// 64KB is more than enough for a 240x240 JPEG frame.
-uint8_t video_buffer[65536];
+// FIXED: Define a global buffer that the library will fill.
+// 64KB (65536) is the standard max size for a high-quality QVGA JPEG frame.
+uint8_t frame_buffer[65536];
 
 // --- State Management ---
 enum State { SEARCHING, CONNECTED };
@@ -60,11 +60,12 @@ int JPEGDraw(JPEGDRAW *pDraw) {
 }
 
 // === Raw Wi-Fi Video Frame Received Callback ===
-void onVideoFrame(size_t length) {
+// FIXED: Signature changed to match RecvCb (uint32_t only)
+void onVideoFrame(uint32_t length) {
     if (currentState != CONNECTED) return;
     
-    // FIXED: Use the global video_buffer which the library has now filled
-    if (jpeg.openRAM(video_buffer, length, JPEGDraw)) {
+    // The library has already filled our global 'frame_buffer'
+    if (jpeg.openRAM(frame_buffer, length, JPEGDraw)) {
         jpeg.setPixelType(RGB565_BIG_ENDIAN); 
         jpeg.decode(0, 0, 0);                 
         jpeg.close();
@@ -77,7 +78,7 @@ void onVideoFrame(size_t length) {
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
-            // FIXED: Using readPixel instead of getPixel
+            // FIXED: Using readPixel (TFT_eSPI standard)
             tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); 
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
@@ -154,9 +155,9 @@ void setup() {
     esp_now_add_peer(&peerInfo);
     esp_now_register_recv_cb(onDataRecv);
 
-    // FIXED: Must tell the library which buffer to fill on the receiver side
-    radio.setRecvBuffer(video_buffer);
-    radio.setRecvCallback(onVideoFrame);
+    // FIXED: Correct setup sequence for ESPNowCam 0.2.1
+    radio.setRecvBuffer(frame_buffer); // Tell library where to put data
+    radio.setRecvCallback(onVideoFrame); // Tell library who to call when done
     radio.init(512); 
 
     tft.fillScreen(TFT_WHITE);
@@ -173,15 +174,8 @@ void loop() {
     } 
     else if (currentState == CONNECTED) {
         if (now - lastJoystickTime > 50) {
-            uint8_t lx = getAnalog(ADC_JOY_LX);
-            uint8_t ly = 255 - getAnalog(ADC_JOY_LY); 
-            uint8_t rx = getAnalog(ADC_JOY_RX);
-            uint8_t ry = 255 - getAnalog(ADC_JOY_RY); 
-            uint8_t byte5 = getDPadAndButtons();
-
-            uint8_t payload[6] = {67, lx, ly, rx, ry, byte5};
+            uint8_t payload[6] = {67, getAnalog(ADC_JOY_LX), (uint8_t)(255 - getAnalog(ADC_JOY_LY)), getAnalog(ADC_JOY_RX), (uint8_t)(255 - getAnalog(ADC_JOY_RY)), getDPadAndButtons()};
             esp_now_send(carMac, payload, 6);
-            
             lastJoystickTime = now;
         }
     }
