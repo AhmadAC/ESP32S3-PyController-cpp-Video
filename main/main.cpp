@@ -11,7 +11,7 @@ extern "C" void app_main(void) {
     Gamepad gamepad;
     gamepad.init();
 
-    ESP_LOGI("MAIN", "PyController C++ Booted.");
+    ESP_LOGI("MAIN", "PyController C++ Hardware Initialized.");
 
     while (1) {
         GamepadState state = gamepad.read();
@@ -21,12 +21,12 @@ extern "C" void app_main(void) {
         else if (state.x) lcd.fill_screen(COLOR_BLUE);
         else if (state.y) lcd.fill_screen(COLOR_YELLOW);
 
-        // Simple joystick visualization
+        // Simple joystick cursor
         static int16_t lx = 120, ly = 120;
-        lcd.draw_pixel(lx, ly, COLOR_BLACK); // Erase old
+        lcd.draw_pixel(lx, ly, COLOR_BLACK); 
         lx = 120 + state.left_x;
         ly = 120 + state.left_y;
-        lcd.draw_pixel(lx, ly, COLOR_WHITE); // Draw new
+        lcd.draw_pixel(lx, ly, COLOR_WHITE);
 
         vTaskDelay(pdMS_TO_TICKS(16));
     }

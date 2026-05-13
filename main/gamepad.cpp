@@ -39,11 +39,11 @@ void Gamepad::init() {
         gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
     }
 
-    // Fixed initialization for C++ compatibility
+    // Fixed for ESP-IDF v5.3 oneshot ADC requirements
     adc_oneshot_unit_init_cfg_t init_config = {};
     init_config.unit_id = ADC_UNIT;
-    init_config.clk_src = ADC_DIGI_CLK_SRC_DEFAULT;
-    init_config.ulp_mode = ADC_ONESHOT_ULP_MODE_DISABLE;
+    init_config.clk_src = ADC_RTC_CLK_SRC_DEFAULT; 
+    init_config.ulp_mode = ADC_ULP_MODE_DISABLE;
     
     ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config, &adc_handle_));
 

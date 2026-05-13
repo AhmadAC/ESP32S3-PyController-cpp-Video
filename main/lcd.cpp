@@ -78,34 +78,19 @@ void LCD::init() {
     send_cmd(0x11); 
     vTaskDelay(pdMS_TO_TICKS(120));
 
-    uint8_t data;
-    
-    data = 0x05;
-    send_cmd(0x3A); send_data(&data, 1);
-
-    data = 0xC0; // Orientation fix
-    send_cmd(0x36); send_data(&data, 1);
+    uint8_t d;
+    d = 0x05; send_cmd(0x3A); send_data(&d, 1);
+    d = 0xC0; send_cmd(0x36); send_data(&d, 1); // HW Orientation Fix
 
     uint8_t porch[] = {0x0C, 0x0C, 0x00, 0x33, 0x33};
     send_cmd(0xB2); send_data(porch, 5);
 
-    data = 0x35;
-    send_cmd(0xB7); send_data(&data, 1);
-
-    data = 0x32;
-    send_cmd(0xBB); send_data(&data, 1);
-
-    data = 0x01;
-    send_cmd(0xC2); send_data(&data, 1);
-
-    data = 0x15;
-    send_cmd(0xC3); send_data(&data, 1);
-
-    data = 0x20;
-    send_cmd(0xC4); send_data(&data, 1);
-
-    data = 0x0F;
-    send_cmd(0xC6); send_data(&data, 1);
+    d = 0x35; send_cmd(0xB7); send_data(&d, 1);
+    d = 0x32; send_cmd(0xBB); send_data(&d, 1);
+    d = 0x01; send_cmd(0xC2); send_data(&d, 1);
+    d = 0x15; send_cmd(0xC3); send_data(&d, 1);
+    d = 0x20; send_cmd(0xC4); send_data(&d, 1);
+    d = 0x0F; send_cmd(0xC6); send_data(&d, 1);
 
     uint8_t pwr[] = {0xA4, 0xA1};
     send_cmd(0xD0); send_data(pwr, 2);
@@ -122,25 +107,24 @@ void LCD::init() {
 }
 
 void LCD::set_address_window(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2) {
-    uint8_t data_x[] = {(uint8_t)(x1 >> 8), (uint8_t)x1, (uint8_t)(x2 >> 8), (uint8_t)x2};
-    send_cmd(0x2A); send_data(data_x, 4);
+    uint8_t dx[] = {(uint8_t)(x1 >> 8), (uint8_t)x1, (uint8_t)(x2 >> 8), (uint8_t)x2};
+    send_cmd(0x2A); send_data(dx, 4);
 
-    uint8_t data_y[] = {(uint8_t)(y1 >> 8), (uint8_t)y1, (uint8_t)(y2 >> 8), (uint8_t)y2};
-    send_cmd(0x2B); send_data(data_y, 4);
+    uint8_t dy[] = {(uint8_t)(y1 >> 8), (uint8_t)y1, (uint8_t)(y2 >> 8), (uint8_t)y2};
+    send_cmd(0x2B); send_data(dy, 4);
 
     send_cmd(0x2C); 
 }
 
 void LCD::fill_screen(uint16_t color) {
     set_address_window(0, 0, DISP_WIDTH - 1, DISP_HEIGHT - 1);
-    uint16_t color_swap = (color << 8) | (color >> 8);
+    uint16_t swap = (color << 8) | (color >> 8);
     uint16_t* line = (uint16_t*)heap_caps_malloc(DISP_WIDTH * 2, MALLOC_CAP_DMA);
-    for(int i = 0; i < DISP_WIDTH; i++) line[i] = color_swap;
+    for(int i = 0; i < DISP_WIDTH; i++) line[i] = swap;
 
     gpio_set_level((gpio_num_t)PIN_NUM_DC, 1);
     for(int i = 0; i < DISP_HEIGHT; i++) {
-        spi_transaction_t t;
-        memset(&t, 0, sizeof(t));
+        spi_transaction_t t = {};
         t.length = DISP_WIDTH * 16;
         t.tx_buffer = line;
         spi_device_polling_transmit(spi_handle_, &t);

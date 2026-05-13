@@ -24,7 +24,7 @@ private:
     static const int DISP_HEIGHT = 240;
 
     static const int X_OFFSET = 0;
-    static const int Y_OFFSET = 0; // Hardware fixed
+    static const int Y_OFFSET = 0; 
 };
 
 #define COLOR_BLACK   0x0000
