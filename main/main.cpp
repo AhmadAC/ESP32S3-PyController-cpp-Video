@@ -73,7 +73,8 @@ void onVideoFrame(uint8_t *buffer, size_t length) {
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
-            tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); // "Erase" by drawing background color
+            // Erase previous circle by drawing the background color at that spot
+            tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); 
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
     }
@@ -101,7 +102,7 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
             Serial.println("Paired to Peer!");
         }
     } 
-    // 2. Telemetry Parsing Logic
+    // 2. Telemetry Parsing Logic for PyCar
     else if (len > 3 && data[0] == 'D' && data[1] == ':') {
         char msg[64];
         int cpyLen = len < 63 ? len : 63;
@@ -145,8 +146,8 @@ uint8_t getSystemButtons() {
 }
 
 uint8_t getAnalog(int channel) {
-    int val = analogRead(channel); // Reads ADC channel directly
-    return val / 16; // Map 12-bit (4095) down to 8-bit (255)
+    int val = analogRead(channel);
+    return val / 16; 
 }
 
 void setup() {
@@ -162,9 +163,9 @@ void setup() {
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting Controller...", 20, 110, 4);
-
-    // Initialize RAW WiFi Communication FIRST (This handles ESP-IDF WiFi setup internally)
-    // Removing Arduino WiFi.mode() prevents the duplicate netif crash!
+    
+    // The ESPNowCam/WiFiRawComm library handles all WiFi initialization internally.
+    // Calling Arduino's WiFi.mode() here will cause a crash.
     radio.init(512); 
     radio.setChannel(1);
 
@@ -204,8 +205,7 @@ void loop() {
             uint8_t rx = getAnalog(ADC_JOY_RX);
             uint8_t ry = 255 - getAnalog(ADC_JOY_RY); 
             uint8_t byte5 = getDPadAndButtons();
-            uint8_t byte6 = getSystemButtons();
-
+            
             uint8_t payload[6] = {67, lx, ly, rx, ry, byte5};
             esp_now_send(peerMac, payload, 6);
             
