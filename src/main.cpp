@@ -3,7 +3,6 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
-
 #include <TFT_eSPI.h>
 #include <JPEGDEC.h>
 #include <WiFiRawComm.h>
@@ -12,8 +11,6 @@
 // --- Gamepad Pinout ---
 #define BTN_START 0
 #define BTN_BACK  1
-#define BTN_A_OK  6
-#define BTN_B_OK  9
 #define BTN_UP    10
 #define BTN_DOWN  11
 #define BTN_LEFT  12
@@ -35,9 +32,10 @@ JPEGDEC jpeg;
 WiFiRawComm wifiRaw;
 ESPNowCam radio(&wifiRaw);
 
-// FIXED: Define a global buffer that the library will fill.
-// 64KB (65536) is the standard max size for a high-quality QVGA JPEG frame.
+// --- Video Buffer & Flags ---
 uint8_t frame_buffer[65536];
+volatile bool hasNewFrame = false;
+volatile uint32_t latestFrameLength = 0;
 
 // --- State Management ---
 enum State { SEARCHING, CONNECTED };
@@ -59,33 +57,14 @@ int JPEGDraw(JPEGDRAW *pDraw) {
     return 1; 
 }
 
-// === Raw Wi-Fi Video Frame Received Callback ===
-// FIXED: Signature changed to match RecvCb (uint32_t only)
+// === Video Callback (Minimal Logic to avoid Stack Overflow) ===
 void onVideoFrame(uint32_t length) {
-    if (currentState != CONNECTED) return;
-    
-    // The library has already filled our global 'frame_buffer'
-    if (jpeg.openRAM(frame_buffer, length, JPEGDraw)) {
-        jpeg.setPixelType(RGB565_BIG_ENDIAN); 
-        jpeg.decode(0, 0, 0);                 
-        jpeg.close();
-
-        // --- Overlay Telemetry Text ---
-        tft.setTextColor(TFT_GREEN, TFT_BLACK);
-        tft.setTextDatum(TL_DATUM); 
-        tft.drawString("Dist: " + String(currentDist, 2) + " cm  ", 5, 220, 2);
-        
-        if (lineFollowerActive) {
-            tft.fillCircle(220, 20, 10, TFT_BLACK);
-        } else {
-            // FIXED: Using readPixel (TFT_eSPI standard)
-            tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); 
-            tft.drawCircle(220, 20, 10, TFT_WHITE);
-        }
-    }
+    if (currentState != CONNECTED || hasNewFrame) return;
+    latestFrameLength = length;
+    hasNewFrame = true; // Signal the loop to process this
 }
 
-// === ESP-NOW Data Received Callback (Handshake & Telemetry) ===
+// === ESP-NOW Data (Telemetry) ===
 void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
     if (currentState == SEARCHING && len >= 9 && strncmp((const char*)data, "pyCAR_ACK", 9) == 0) {
         memcpy(carMac, mac, 6);
@@ -93,11 +72,9 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
         memcpy(peerInfo.peer_addr, carMac, 6);
         peerInfo.channel = 1;
         peerInfo.encrypt = false;
-        if(esp_now_is_peer_exist(carMac)) esp_now_mod_peer(&peerInfo);
-        else esp_now_add_peer(&peerInfo);
+        if (!esp_now_is_peer_exist(carMac)) esp_now_add_peer(&peerInfo);
         currentState = CONNECTED;
         tft.fillScreen(TFT_BLACK);
-        Serial.println("Paired to Car!");
     } 
     else if (len > 3 && data[0] == 'D' && data[1] == ':') {
         char msg[64];
@@ -134,14 +111,14 @@ uint8_t getAnalog(int channel) {
 
 void setup() {
     Serial.begin(115200);
-    const int buttons[] = {BTN_START, BTN_BACK, BTN_A_OK, BTN_B_OK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
+    const int buttons[] = {BTN_START, BTN_BACK, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_X, BTN_Y, BTN_A, BTN_B};
     for (int pin : buttons) pinMode(pin, INPUT_PULLUP);
     
     tft.init();
     tft.setRotation(0); 
     tft.fillScreen(TFT_WHITE);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
-    tft.drawString("Booting Controller...", 20, 110, 4);
+    tft.drawString("Booting...", 10, 10, 2);
 
     WiFi.mode(WIFI_STA);
     esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
@@ -155,23 +132,41 @@ void setup() {
     esp_now_add_peer(&peerInfo);
     esp_now_register_recv_cb(onDataRecv);
 
-    // FIXED: Correct setup sequence for ESPNowCam 0.2.1
-    radio.setRecvBuffer(frame_buffer); // Tell library where to put data
-    radio.setRecvCallback(onVideoFrame); // Tell library who to call when done
-    radio.init(512); 
+    radio.setRecvBuffer(frame_buffer); 
+    radio.setRecvCallback(onVideoFrame);
+    // FIXED: Reduced from 512 to 240 to prevent internal library buffer overflow
+    radio.init(240); 
 
-    tft.fillScreen(TFT_WHITE);
-    tft.drawString("Searching for Car...", 25, 110, 4);
+    tft.drawString("Searching Car...", 10, 110, 2);
 }
 
 void loop() {
     unsigned long now = millis();
+
+    // 1. Process Video Frame (Done here in loop to prevent stack crashes)
+    if (hasNewFrame) {
+        if (jpeg.openRAM(frame_buffer, latestFrameLength, JPEGDraw)) {
+            jpeg.setPixelType(RGB565_BIG_ENDIAN); 
+            jpeg.decode(0, 0, 0);                 
+            jpeg.close();
+
+            // Overlay UI
+            tft.setTextColor(TFT_GREEN, TFT_BLACK);
+            tft.drawString("Dist: " + String(currentDist, 1) + "cm", 5, 220, 2);
+            if (lineFollowerActive) tft.fillCircle(220, 20, 10, TFT_BLACK);
+            else tft.drawCircle(220, 20, 10, TFT_WHITE);
+        }
+        hasNewFrame = false;
+    }
+
+    // 2. Discovery
     if (currentState == SEARCHING) {
-        if (now - lastDiscoveryTime > 250) {
+        if (now - lastDiscoveryTime > 500) {
             esp_now_send(broadcastMac, (uint8_t*)"pyCAR_DISCOVER", 14);
             lastDiscoveryTime = now;
         }
     } 
+    // 3. Joystick Transmission
     else if (currentState == CONNECTED) {
         if (now - lastJoystickTime > 50) {
             uint8_t payload[6] = {67, getAnalog(ADC_JOY_LX), (uint8_t)(255 - getAnalog(ADC_JOY_LY)), getAnalog(ADC_JOY_RX), (uint8_t)(255 - getAnalog(ADC_JOY_RY)), getDPadAndButtons()};
