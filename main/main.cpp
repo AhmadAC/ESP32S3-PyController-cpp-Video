@@ -72,7 +72,7 @@ void onVideoFrame(uint8_t *buffer, size_t length) {
         if (lineFollowerActive) {
             tft.fillCircle(220, 20, 10, TFT_BLACK);
         } else {
-            // FIX: readPixel instead of getPixel to resolve compiler error
+            // FIX: Changed getPixel to readPixel to match TFT_eSPI API
             tft.fillCircle(220, 20, 10, tft.readPixel(220, 20)); 
             tft.drawCircle(220, 20, 10, TFT_WHITE);
         }
@@ -163,7 +163,7 @@ void setup() {
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.drawString("Booting Controller...", 20, 110, 4);
     
-    // Initialize RAW WiFi Communication internally
+    // radio.init handles all WiFi stack setup internally
     radio.init(512); 
     radio.setChannel(1);
 
@@ -180,7 +180,7 @@ void setup() {
     
     esp_now_register_recv_cb(onDataRecv);
 
-    // FIX: setRecvCallback instead of setReceiveCallback to resolve compiler error
+    // FIX: Changed setReceiveCallback to setRecvCallback to match EspNowCam API
     radio.setRecvCallback(onVideoFrame);
 
     tft.fillScreen(TFT_WHITE);
