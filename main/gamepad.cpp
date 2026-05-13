@@ -1,75 +1,88 @@
 #include "gamepad.hpp"
 #include "driver/gpio.h"
-#include "esp_adc/adc_oneshot.h"
+#include <cstdlib>
 
-static adc_oneshot_unit_handle_t adc1_handle;
+#define ADC_UNIT ADC_UNIT_1
+#define ADC_ATTEN ADC_ATTEN_DB_12
+
+// Verified hardware mapping from schematic + MicroPython config
+#define PIN_LEFT_X ADC_CHANNEL_3  // GPIO 4
+#define PIN_LEFT_Y ADC_CHANNEL_4  // GPIO 5
+#define PIN_RIGHT_X ADC_CHANNEL_6 // GPIO 7
+#define PIN_RIGHT_Y ADC_CHANNEL_7 // GPIO 8
+
+#define PIN_L_PUSH GPIO_NUM_6
+#define PIN_R_PUSH GPIO_NUM_9
+#define PIN_UP     GPIO_NUM_10
+#define PIN_DOWN   GPIO_NUM_11
+#define PIN_LEFT   GPIO_NUM_12
+#define PIN_RIGHT  GPIO_NUM_13
+#define PIN_Y      GPIO_NUM_15
+#define PIN_X      GPIO_NUM_14
+#define PIN_B      GPIO_NUM_21
+#define PIN_A      GPIO_NUM_16
+#define PIN_START  GPIO_NUM_0
+#define PIN_BACK   GPIO_NUM_1
+
+Gamepad::Gamepad() : adc_handle_(nullptr) {}
 
 void Gamepad::init() {
-    gpio_config_t io_conf = {};
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.pin_bit_mask = (1ULL<<10) | (1ULL<<11) | (1ULL<<12) | (1ULL<<13) |
-                           (1ULL<<14) | (1ULL<<15) | (1ULL<<16) | (1ULL<<21) |
-                           (1ULL<<1)  | (1ULL<<0)  | (1ULL<<6)  | (1ULL<<9);
-    gpio_config(&io_conf);
+    const gpio_num_t buttons[] = {
+        PIN_L_PUSH, PIN_R_PUSH, PIN_UP, PIN_DOWN, PIN_LEFT, PIN_RIGHT,
+        PIN_Y, PIN_X, PIN_B, PIN_A, PIN_START, PIN_BACK
+    };
 
-    adc_oneshot_unit_init_cfg_t init_config1 = {};
-    init_config1.unit_id = ADC_UNIT_1;
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
+    for(auto pin : buttons) {
+        gpio_reset_pin(pin);
+        gpio_set_direction(pin, GPIO_MODE_INPUT);
+        gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
+    }
 
-    adc_oneshot_chan_cfg_t config = {};
-    config.atten = ADC_ATTEN_DB_12; 
-    config.bitwidth = ADC_BITWIDTH_DEFAULT;
+    adc_oneshot_unit_init_cfg_t init_config = { .unit_id = ADC_UNIT };
+    adc_oneshot_new_unit(&init_config, &adc_handle_);
 
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_3, &config)); // IO4
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_4, &config)); // IO5
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_6, &config)); // IO7
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_7, &config)); // IO8
+    adc_oneshot_chan_cfg_t config = {
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+        .atten = ADC_ATTEN,
+    };
+    adc_oneshot_config_channel(adc_handle_, PIN_LEFT_X, &config);
+    adc_oneshot_config_channel(adc_handle_, PIN_LEFT_Y, &config);
+    adc_oneshot_config_channel(adc_handle_, PIN_RIGHT_X, &config);
+    adc_oneshot_config_channel(adc_handle_, PIN_RIGHT_Y, &config);
 }
 
 GamepadState Gamepad::read() {
-    GamepadState state = {};
-    int val = 0;
-    
-    adc_oneshot_read(adc1_handle, ADC_CHANNEL_3, &val); // LX
-    state.lx = (val * 255) / 4095;
-    
-    adc_oneshot_read(adc1_handle, ADC_CHANNEL_4, &val); // LY
-    state.ly = (val * 255) / 4095;
-    
-    adc_oneshot_read(adc1_handle, ADC_CHANNEL_6, &val); // RX
-    state.rx = (val * 255) / 4095;
-    
-    adc_oneshot_read(adc1_handle, ADC_CHANNEL_7, &val); // RY
-    state.ry = (val * 255) / 4095;
+    GamepadState s;
+    // Low = Pressed (Pull-up)
+    s.up = !gpio_get_level(PIN_UP);
+    s.down = !gpio_get_level(PIN_DOWN);
+    s.left = !gpio_get_level(PIN_LEFT);
+    s.right = !gpio_get_level(PIN_RIGHT);
+    s.y = !gpio_get_level(PIN_Y);
+    s.x = !gpio_get_level(PIN_X);
+    s.b = !gpio_get_level(PIN_B);
+    s.a = !gpio_get_level(PIN_A);
+    s.start = !gpio_get_level(PIN_START);
+    s.back = !gpio_get_level(PIN_BACK);
+    s.left_stick_push = !gpio_get_level(PIN_L_PUSH);
+    s.right_stick_push = !gpio_get_level(PIN_R_PUSH);
 
-    bool up = !gpio_get_level((gpio_num_t)10);
-    bool down = !gpio_get_level((gpio_num_t)11);
-    bool left = !gpio_get_level((gpio_num_t)12);
-    bool right = !gpio_get_level((gpio_num_t)13);
+    int lx, ly, rx, ry;
+    adc_oneshot_read(adc_handle_, PIN_LEFT_X, &lx);
+    adc_oneshot_read(adc_handle_, PIN_LEFT_Y, &ly);
+    adc_oneshot_read(adc_handle_, PIN_RIGHT_X, &rx);
+    adc_oneshot_read(adc_handle_, PIN_RIGHT_Y, &ry);
 
-    uint8_t dpad = 8;
-    if (up) {
-        if (right) dpad = 1;
-        else if (left) dpad = 7;
-        else dpad = 0;
-    } else if (down) {
-        if (right) dpad = 3;
-        else if (left) dpad = 5;
-        else dpad = 4;
-    } else if (right) {
-        dpad = 2;
-    } else if (left) {
-        dpad = 6;
-    }
+    auto map_axis = [](int val) -> int8_t {
+        int res = (val - 2048) / 16;
+        if (std::abs(res) < 15) return 0; // Deadzone
+        return (res > 127) ? 127 : (res < -128 ? -128 : res);
+    };
 
-    state.buttons = dpad;
+    s.left_x = map_axis(lx);
+    s.left_y = -map_axis(ly); // Invert Y
+    s.right_x = map_axis(rx);
+    s.right_y = -map_axis(ry); // Invert Y
 
-    if (!gpio_get_level((gpio_num_t)16)) state.buttons |= (1<<6); // A
-    if (!gpio_get_level((gpio_num_t)21)) state.buttons |= (1<<5); // B
-    if (!gpio_get_level((gpio_num_t)14)) state.buttons |= (1<<7); // X
-    if (!gpio_get_level((gpio_num_t)15)) state.buttons |= (1<<4); // Y
-
-    return state;
+    return s;
 }

@@ -24,12 +24,12 @@ private:
     static const int DISP_WIDTH = 240;
     static const int DISP_HEIGHT = 240;
 
-    // The crucial offset derived from the original C driver
+    // Fixed hardware orientation via MADCTL allows 0 offset
     static const int X_OFFSET = 0;
-    static const int Y_OFFSET = 80;
+    static const int Y_OFFSET = 0;
 };
 
-// Color definitions
+// Color definitions (RGB565)
 #define COLOR_BLACK   0x0000
 #define COLOR_WHITE   0xFFFF
 #define COLOR_RED     0xF800
