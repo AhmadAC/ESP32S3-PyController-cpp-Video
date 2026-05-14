@@ -389,9 +389,23 @@ void LCD::draw_bitmap(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t
 }
 
 void LCD::draw_jpg(const char* filename, int x, int y) {
-    FILE* f = fopen(filename, "rb");
+    char full_path[128];
+    
+    // Automatically prepend the VFS mount point (/spiffs) to the string 
+    // so you can just pass "/picture/Car.jpg" or "picture/Car.jpg" safely
+    if (strncmp(filename, "/spiffs", 7) != 0) {
+        if (filename[0] != '/') {
+            snprintf(full_path, sizeof(full_path), "/spiffs/%s", filename);
+        } else {
+            snprintf(full_path, sizeof(full_path), "/spiffs%s", filename);
+        }
+    } else {
+        strncpy(full_path, filename, sizeof(full_path));
+    }
+
+    FILE* f = fopen(full_path, "rb");
     if (!f) {
-        ESP_LOGE("LCD", "Failed to open JPG: %s", filename);
+        ESP_LOGE("LCD", "Failed to open JPG: %s", full_path);
         return;
     }
     JpegDev dev = {f, this, x, y};

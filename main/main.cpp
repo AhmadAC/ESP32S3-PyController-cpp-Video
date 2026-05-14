@@ -88,6 +88,8 @@ extern "C" void app_main(void) {
     Gamepad gamepad;
     gamepad.init();
 
+    // VFS mount point requires a prefix. 
+    // This connects SPIFFS to "/spiffs" behind the scenes, allowing lcd.cpp to format the string for you!
     esp_vfs_spiffs_conf_t spiffs_conf = {
         .base_path = "/spiffs",
         .partition_label = NULL,
@@ -130,7 +132,10 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
 
     lcd.fill_screen(COLOR_WHITE);
+    
+    // Now you can easily use standard directory strings, no spiffs text required!
     lcd.draw_jpg("/picture/Car.jpg", 0, 0); 
+    
     lcd.draw_string(10, 10, "Connected!", COLOR_GREEN, COLOR_WHITE, 2);
     lcd.draw_string(10, 160, "Ultrasonic:", COLOR_BLACK, COLOR_WHITE, 2);
 
