@@ -1,4 +1,4 @@
-// main/main.cpp
+// ESP32S3-PyController-cpp-Video\main\main.cpp
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -72,6 +72,8 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
 
     // Reassemble incoming image chunks into active memory
     if (data_len >= 8 && data[0] == 'C' && data[1] == 'I') {
+        if (img_ready) return; // Protect buffer from overwrites while decoding (Safely drops frames under heavy load)
+
         uint16_t chunk_idx; memcpy(&chunk_idx, &data[2], 2);
         uint16_t total_chunks; memcpy(&total_chunks, &data[4], 2);
         uint16_t len; memcpy(&len, &data[6], 2);
@@ -87,7 +89,6 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
             img_chunks_received = 0;
             img_total_chunks = total_chunks;
             img_len = 0;
-            img_ready = false;
         }
         
         if (img_buf && chunk_idx == img_chunks_received && total_chunks == img_total_chunks) {
@@ -203,6 +204,8 @@ extern "C" void app_main(void) {
     bool last_lf_state = false;
     bool last_sync_state = false;
     bool last_x_state = false;
+    bool last_a_state = false;
+    bool mjpeg_stream_active = false;
 
     while (true) {
         TickType_t now = xTaskGetTickCount();
@@ -226,7 +229,11 @@ extern "C" void app_main(void) {
             last_lf_state = !line_follower_state;
             last_sync_state = !sync_state;
             
-            lcd.draw_string(10, 220, "          ", COLOR_WHITE, COLOR_WHITE, 1); // clears req text
+            if (mjpeg_stream_active) {
+                lcd.draw_string(10, 220, "Stream On ", COLOR_RED, COLOR_WHITE, 1);
+            } else {
+                lcd.draw_string(10, 220, "          ", COLOR_WHITE, COLOR_WHITE, 1); // clears req text
+            }
         }
 
         // A. RATE-LIMITED LCD UPDATE
@@ -266,6 +273,21 @@ extern "C" void app_main(void) {
                 }
             }
             last_x_state = state.x;
+
+            // A Button Toggle Event Handler
+            if (state.a && !last_a_state) {
+                if (has_cam) {
+                    mjpeg_stream_active = !mjpeg_stream_active;
+                    if (mjpeg_stream_active) {
+                        esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_1", 11);
+                        lcd.draw_string(10, 220, "Stream On ", COLOR_RED, COLOR_WHITE, 1);
+                    } else {
+                        esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_0", 11);
+                        lcd.draw_string(10, 220, "Stream Off", COLOR_RED, COLOR_WHITE, 1);
+                    }
+                }
+            }
+            last_a_state = state.a;
 
             uint8_t lx = (state.left_x / 14) > 255 ? 255 : (state.left_x / 14);
             uint8_t ly = (state.left_y / 14) > 255 ? 255 : (state.left_y / 14);
