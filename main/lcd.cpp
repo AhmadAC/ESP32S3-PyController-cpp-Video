@@ -140,7 +140,7 @@ static unsigned int tjd_output(JDEC* jd, void* bitmap, JRECT* rect) {
     uint16_t w = rect->right - rect->left + 1;
     uint16_t h = rect->bottom - rect->top + 1;
     dev->lcd->draw_bitmap(dev->x_off + rect->left, dev->y_off + rect->top, w, h, (const uint16_t*)bitmap);
-    return 1;
+    return 0; // Return 0 (JDR_OK) to continue decompression in this specific library version
 }
 
 LCD::LCD() : spi_handle_(nullptr) {}
@@ -411,7 +411,6 @@ void LCD::draw_jpg(const char* filename, int x, int y) {
     JDEC jd;
     
     // Increased from 3100 to 8192 to prevent JDR_MEM1 (memory allocation) failures
-    // which cause the library to silently exit without decoding the image.
     size_t worksz = 8192; 
     uint8_t* workbuf = (uint8_t*)heap_caps_malloc(worksz, MALLOC_CAP_8BIT);
     
