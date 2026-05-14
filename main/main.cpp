@@ -1,7 +1,7 @@
 // main/main.cpp
 #include <stdio.h>
 #include <string.h>
-#include "freertos/FreeRTOS.hh"
+#include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
