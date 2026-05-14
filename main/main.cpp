@@ -1,5 +1,3 @@
-#################### START OF FILE: main\main.cpp ####################
-
 // main/main.cpp
 #include <stdio.h>
 #include <string.h>
