@@ -23,6 +23,7 @@ static volatile bool has_cam = false;
 
 static uint8_t peer_mac[6] = {0}; // Car MAC
 static uint8_t cam_mac[6]  = {0}; // Cam MAC
+static uint8_t my_mac[6]   = {0}; // PyController MAC
 static const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 static char distance_str[32] = "0.00 cm";
@@ -36,7 +37,60 @@ static int img_chunks_received = 0;
 static int img_total_chunks = 0;
 static volatile bool img_ready = false;
 
-// --- ESP-NOW Receive Callback ---
+// --- RAW Wi-Fi Promiscuous Callback for High-Speed MJPEG ---
+void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
+    if (type != WIFI_PKT_DATA) return;
+    
+    wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
+    uint8_t *payload = pkt->payload;
+    uint16_t pkt_len = pkt->rx_ctrl.sig_len;
+
+    if (pkt_len < 33) return; // 24 MAC header + 9 custom header minimum
+
+    // Check if it's our standard 802.11 Data Frame format
+    uint16_t fc;
+    memcpy(&fc, payload, 2);
+    if (fc != 0x0008) return; 
+
+    // Check if Addr1 (Destination MAC) matches my_mac
+    if (memcmp(payload + 4, my_mac, 6) != 0) return;
+
+    // Check custom signature payload starting at byte 24
+    uint8_t *custom = payload + 24;
+    if (custom[0] == 'C' && custom[1] == 'A' && custom[2] == 'M') {
+        if (img_ready) return; // Drop frame gracefully if decoder is busy
+
+        uint16_t chunk_idx, total_chunks, len;
+        memcpy(&chunk_idx, custom + 3, 2);
+        memcpy(&total_chunks, custom + 5, 2);
+        memcpy(&len, custom + 7, 2);
+        
+        if (chunk_idx == 0) {
+            if (total_chunks > 100) return; // Avoid overflow (100 * 1024 bytes = 100KB safe limit)
+            
+            if (img_buf) {
+                heap_caps_free(img_buf);
+                img_buf = nullptr;
+            }
+            img_buf = (uint8_t*)heap_caps_malloc(total_chunks * 1024, MALLOC_CAP_8BIT);
+            img_chunks_received = 0;
+            img_total_chunks = total_chunks;
+            img_len = 0;
+        }
+
+        if (img_buf && chunk_idx == img_chunks_received && total_chunks == img_total_chunks) {
+            memcpy(img_buf + img_len, custom + 9, len);
+            img_len += len;
+            img_chunks_received++;
+            
+            if (img_chunks_received == img_total_chunks) {
+                img_ready = true;
+            }
+        }
+    }
+}
+
+// --- ESP-NOW Receive Callback (Car & Camera Discovery / Telemetry Only) ---
 void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int data_len) {
     if (data == NULL || data_len <= 0) return;
 
@@ -70,39 +124,6 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
         return;
     }
 
-    // Reassemble incoming image chunks into active memory
-    if (data_len >= 8 && data[0] == 'C' && data[1] == 'I') {
-        if (img_ready) return; // Protect buffer from overwrites while decoding (Safely drops frames under heavy load)
-
-        uint16_t chunk_idx; memcpy(&chunk_idx, &data[2], 2);
-        uint16_t total_chunks; memcpy(&total_chunks, &data[4], 2);
-        uint16_t len; memcpy(&len, &data[6], 2);
-        
-        if (chunk_idx == 0) {
-            if (total_chunks > 400) return; // Ignore wildly unsafe sizes
-
-            if (img_buf) {
-                heap_caps_free(img_buf);
-                img_buf = nullptr;
-            }
-            img_buf = (uint8_t*)heap_caps_malloc(total_chunks * 240, MALLOC_CAP_8BIT); 
-            img_chunks_received = 0;
-            img_total_chunks = total_chunks;
-            img_len = 0;
-        }
-        
-        if (img_buf && chunk_idx == img_chunks_received && total_chunks == img_total_chunks) {
-            memcpy(img_buf + img_len, &data[8], len);
-            img_len += len;
-            img_chunks_received++;
-            
-            if (img_chunks_received == img_total_chunks) {
-                img_ready = true;
-            }
-        }
-        return;
-    }
-    
     // Existing pyCar state logic telemetry
     if (data_len >= 2 && data[0] == 'D' && data[1] == ':') {
         has_car = true;
@@ -173,6 +194,16 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));
+
+    // Cache the receiver MAC to handle incoming packet validation
+    ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, my_mac));
+
+    // Enable Promiscuous Mode to listen for Raw Wi-Fi Injections from the pyCam
+    wifi_promiscuous_filter_t filter = {};
+    filter.filter_mask = WIFI_PROMIS_FILTER_MASK_DATA | WIFI_PROMIS_FILTER_MASK_MGMT;
+    ESP_ERROR_CHECK(esp_wifi_set_promiscuous_filter(&filter));
+    ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(promiscuous_rx_cb));
+    ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
 
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));
