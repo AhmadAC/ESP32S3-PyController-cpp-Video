@@ -19,22 +19,28 @@ jobs:
         with:
           esp_idf_version: v5.3.1
           target: esp32s3
-          command: |
-            # 1. Standard build
-            idf.py build
-            
-            # 2. Install esptool
-            pip install esptool
-            
-            # 3. Enter the build directory so the paths inside flash_args resolve correctly
-            cd build
-            
-            # 4. Run merge_bin using the auto-generated flash_args file
-            python -m esptool --chip esp32s3 merge_bin -o merged-pycontroller-s3.bin --fill-flash-size 4MB @flash_args
+          
+      - name: Build Firmware and SPIFFS Image
+        run: |
+          # 1. Standard build to generate app, bootloader, and partition table
+          idf.py build
 
+          # 2. Build the SPIFFS image from the 'data' folder
+          idf.py spiffs_create_image
+
+      - name: Merge All Binaries
+        run: |
+          # 3. Install esptool
+          pip install esptool
+          
+          # 4. Enter the build directory so the paths resolve correctly
+          cd build
+          
+          # 5. Run merge_bin, now INCLUDING the spiffs.bin file at its correct offset from partitions.csv
+          python -m esptool --chip esp32s3 merge_bin -o merged-pycontroller-s3.bin --fill-flash-size 4MB @flash_args spiffs.bin
+          
       - name: Upload Firmware Artifact
         uses: actions/upload-artifact@v4
         with:
           name: pyController-S3-CPP-Merged
-          # Path remains build/ because we created the file inside the build folder in the previous step
           path: build/merged-pycontroller-s3.bin
