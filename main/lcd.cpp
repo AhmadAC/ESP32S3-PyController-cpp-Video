@@ -410,7 +410,7 @@ void LCD::draw_jpg(const char* filename, int x, int y) {
     JpegDev dev = {f, this, x, y};
     JDEC jd;
     
-    // Increased from 3100 to 8192 to prevent JDR_MEM1 (memory allocation) failures
+    // Increased from 3100 to 8192 to prevent JDR_MEM1 (memory allocation) failures.
     size_t worksz = 8192; 
     uint8_t* workbuf = (uint8_t*)heap_caps_malloc(worksz, MALLOC_CAP_8BIT);
     
