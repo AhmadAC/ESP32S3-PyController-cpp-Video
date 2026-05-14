@@ -1,3 +1,5 @@
+#################### START OF FILE: main\main.cpp ####################
+
 // main/main.cpp
 #include <stdio.h>
 #include <string.h>
@@ -92,11 +94,13 @@ extern "C" void app_main(void) {
         .base_path = "/spiffs",
         .partition_label = NULL,
         .max_files = 5,
-        .format_if_mount_failed = false // Don't format, just fail quietly if not found
+        .format_if_mount_failed = false 
     };
     esp_err_t spiffs_ret = esp_vfs_spiffs_register(&spiffs_conf);
     if (spiffs_ret != ESP_OK) {
-        ESP_LOGW(TAG, "No SPIFFS partition found. Background images will be skipped.");
+        ESP_LOGE(TAG, "Failed to mount SPIFFS (%s). Background images will be skipped.", esp_err_to_name(spiffs_ret));
+    } else {
+        ESP_LOGI(TAG, "SPIFFS mounted successfully!");
     }
 
     ESP_ERROR_CHECK(esp_netif_init());
@@ -130,7 +134,7 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
 
     lcd.fill_screen(COLOR_WHITE);
-    lcd.draw_jpg("/picture/Car.jpg", 0, 0); 
+    lcd.draw_jpg("/Car.jpg", 0, 0); 
     
     lcd.draw_string(10, 10, "Connected!", COLOR_GREEN, COLOR_WHITE, 2);
     lcd.draw_string(10, 160, "Ultrasonic:", COLOR_BLACK, COLOR_WHITE, 2);

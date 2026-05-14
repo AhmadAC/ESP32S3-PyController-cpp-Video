@@ -1,3 +1,5 @@
+#################### START OF FILE: main\lcd.cpp ####################
+
 #include "lcd.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
@@ -403,19 +405,32 @@ void LCD::draw_jpg(const char* filename, int x, int y) {
 
     FILE* f = fopen(full_path, "rb");
     if (!f) {
-        // Silently return instead of throwing a red error to keep the console clean.
+        ESP_LOGE("LCD", "Failed to open JPG file: %s", full_path);
         return;
     }
     
     JpegDev dev = {f, this, x, y};
     JDEC jd;
     
-    uint8_t* workbuf = (uint8_t*)heap_caps_malloc(3100, MALLOC_CAP_8BIT);
+    // Increased from 3100 to 8192 to prevent JDR_MEM1 (memory allocation) failures
+    // which cause the library to silently exit without decoding the image.
+    size_t worksz = 8192; 
+    uint8_t* workbuf = (uint8_t*)heap_caps_malloc(worksz, MALLOC_CAP_8BIT);
+    
     if (workbuf) {
-        if (jd_prepare(&jd, tjd_input, workbuf, 3100, &dev) == JDR_OK) {
-            jd_decomp(&jd, tjd_output, 0); 
+        JRESULT rc = jd_prepare(&jd, tjd_input, workbuf, worksz, &dev);
+        if (rc == JDR_OK) {
+            rc = jd_decomp(&jd, tjd_output, 0); 
+            if (rc != JDR_OK) {
+                ESP_LOGE("LCD", "JPG decomp failed with code: %d", rc);
+            }
+        } else {
+            ESP_LOGE("LCD", "JPG prepare failed with code: %d", rc);
         }
         heap_caps_free(workbuf);
+    } else {
+        ESP_LOGE("LCD", "Failed to allocate JPG work buffer");
     }
+    
     fclose(f);
 }
