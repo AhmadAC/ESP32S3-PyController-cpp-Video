@@ -31,7 +31,6 @@ static bool sync_state = false;
 void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int data_len) {
     if (data == NULL || data_len <= 0) return;
 
-    // Check if it's the pairing acknowledgement from PyCar
     if (data_len == 9 && memcmp(data, "pyCAR_ACK", 9) == 0) {
         if (!is_paired) {
             memcpy((void*)peer_mac, esp_now_info->src_addr, 6);
@@ -41,7 +40,6 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
         return;
     }
     
-    // Check if it's a telemetry update from PyCar (e.g., "D:12.34,L:1,X:0")
     if (data_len >= 2 && data[0] == 'D' && data[1] == ':') {
         has_car = true;
         char buf[64] = {0};
@@ -75,7 +73,6 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
 
 // --- Application Entry Point ---
 extern "C" void app_main(void) {
-    // 1. Initialize Non-Volatile Storage
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -83,17 +80,14 @@ extern "C" void app_main(void) {
     }
     ESP_ERROR_CHECK(ret);
 
-    // 2. Initialize Hardware Peripherals
     LCD lcd;
     lcd.init();
-    
     lcd.fill_screen(COLOR_WHITE);
     lcd.draw_string(10, 10, "Booting...", COLOR_BLACK, COLOR_WHITE, 2);
 
     Gamepad gamepad;
     gamepad.init();
 
-    // 3. Initialize File System (SPIFFS)
     esp_vfs_spiffs_conf_t spiffs_conf = {
         .base_path = "/spiffs",
         .partition_label = NULL,
@@ -103,11 +97,8 @@ extern "C" void app_main(void) {
     esp_err_t spiffs_ret = esp_vfs_spiffs_register(&spiffs_conf);
     if (spiffs_ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to mount SPIFFS (%s)", esp_err_to_name(spiffs_ret));
-    } else {
-        ESP_LOGI(TAG, "SPIFFS Mounted Successfully");
     }
 
-    // 4. Initialize Wi-Fi and ESP-NOW
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -120,66 +111,53 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));
 
-    // Register Broadcast Peer
     esp_now_peer_info_t peer_info = {};
     peer_info.channel = 1;
     peer_info.encrypt = false;
     memcpy(peer_info.peer_addr, broadcast_mac, 6);
     ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
 
-    // 5. Pairing Loop
     lcd.fill_screen(COLOR_WHITE);
     lcd.draw_string(10, 100, "Searching for", COLOR_BLACK, COLOR_WHITE, 2);
     lcd.draw_string(10, 130, "pyCar...", COLOR_BLACK, COLOR_WHITE, 2);
-    ESP_LOGI(TAG, "Searching for pyCar...");
 
     while (!is_paired) {
         esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
-        vTaskDelay(pdMS_TO_TICKS(100)); // Yield to allow receiving the ACK
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    ESP_LOGI(TAG, "Connected to Peer!");
     memcpy(peer_info.peer_addr, peer_mac, 6);
     ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
 
-    // --- Initial UI Render --- (Draw the pyCar background image from flash)
     lcd.fill_screen(COLOR_WHITE);
-    lcd.draw_jpg("/spiffs/picture/Car.jpg", 0, 0); // Will render over the white canvas
+    lcd.draw_jpg("/picture/Car.jpg", 0, 0); 
     lcd.draw_string(10, 10, "Connected!", COLOR_GREEN, COLOR_WHITE, 2);
     lcd.draw_string(10, 160, "Ultrasonic:", COLOR_BLACK, COLOR_WHITE, 2);
 
-    // --- State Timers & Caches ---
     TickType_t last_lcd_update = xTaskGetTickCount();
     TickType_t last_tx_update = xTaskGetTickCount();
     char last_dist_str_on_screen[32] = "";
     bool last_lf_state = false;
     bool last_sync_state = false;
 
-    // 6. Main Control Loop
     while (true) {
         TickType_t now = xTaskGetTickCount();
 
-        // A. RATE-LIMITED LCD UPDATE (200ms interval)
+        // A. RATE-LIMITED LCD UPDATE
         if (pdTICKS_TO_MS(now - last_lcd_update) >= 200) {
-            
             if (has_car) {
-                // Distance Text Update
                 if (strcmp(distance_str, last_dist_str_on_screen) != 0) {
                     char padded_text[32];
                     snprintf(padded_text, sizeof(padded_text), "%-12s", distance_str);
                     lcd.draw_string(10, 190, padded_text, COLOR_BLACK, COLOR_WHITE, 2);
                     strcpy(last_dist_str_on_screen, distance_str);
                 }
-
-                // Line Follower Icon Update
                 if (line_follower_state != last_lf_state) {
                     const char* icon = line_follower_state ? "[L]" : "   ";
                     uint16_t fg_color = line_follower_state ? COLOR_BLACK : COLOR_WHITE;
                     lcd.draw_string(210, 10, icon, fg_color, COLOR_WHITE, 2);
                     last_lf_state = line_follower_state;
                 }
-
-                // Sync State Icon Update
                 if (sync_state != last_sync_state) {
                     const char* icon = sync_state ? "[X]" : "   ";
                     uint16_t fg_color = sync_state ? COLOR_RED : COLOR_WHITE;
@@ -194,10 +172,24 @@ extern "C" void app_main(void) {
         if (pdTICKS_TO_MS(now - last_tx_update) >= 50) {
             GamepadState state = gamepad.read();
             
-            uint8_t lx = (uint8_t)(state.left_x + 128);
-            uint8_t ly = (uint8_t)(state.left_y + 128);
-            uint8_t rx = (uint8_t)(state.right_x + 128);
-            uint8_t ry = (uint8_t)(state.right_y + 128);
+            // Advanced mapping: Safely guarantees a 128 perfectly dead-center 
+            // when letting go, completely solving rogue wheel movement.
+            auto map_axis = [](uint16_t raw) -> uint8_t {
+                // Wide deadband forces exact center to lock the car.py math at 0.
+                if (raw > 1800 && raw < 2300) return 128; 
+                
+                if (raw <= 1800) {
+                    return (uint8_t)((raw * 127) / 1800);
+                } else {
+                    int val = 128 + ((raw - 2300) * 127) / (4095 - 2300);
+                    return (uint8_t)(val > 255 ? 255 : val);
+                }
+            };
+
+            uint8_t lx = map_axis(state.left_x);
+            uint8_t ly = map_axis(state.left_y);
+            uint8_t rx = map_axis(state.right_x);
+            uint8_t ry = map_axis(state.right_y);
             
             uint8_t btns = 8; 
             if (state.up && state.right)         btns = 1;

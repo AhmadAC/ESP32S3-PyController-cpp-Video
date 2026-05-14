@@ -5,8 +5,9 @@
 #include "esp_adc/adc_oneshot.h"
 
 struct GamepadState {
-    int8_t left_x, left_y;
-    int8_t right_x, right_y;
+    // Upgraded to uint16_t to hold raw 0-4095 ADC values for the main loop to process
+    uint16_t left_x, left_y;
+    uint16_t right_x, right_y;
     bool up, down, left, right;
     bool y, x, b, a;
     bool start, back;

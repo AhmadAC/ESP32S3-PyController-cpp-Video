@@ -39,7 +39,6 @@ void Gamepad::init() {
         gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
     }
 
-    // Fixed for ESP-IDF v5.3 oneshot ADC requirements
     adc_oneshot_unit_init_cfg_t init_config = {};
     init_config.unit_id = ADC_UNIT;
     init_config.clk_src = ADC_RTC_CLK_SRC_DEFAULT; 
@@ -72,22 +71,27 @@ GamepadState Gamepad::read() {
     s.left_stick_push = !gpio_get_level(PIN_L_PUSH);
     s.right_stick_push = !gpio_get_level(PIN_R_PUSH);
 
-    int lx, ly, rx, ry;
-    adc_oneshot_read(adc_handle_, PIN_LEFT_X, &lx);
-    adc_oneshot_read(adc_handle_, PIN_LEFT_Y, &ly);
-    adc_oneshot_read(adc_handle_, PIN_RIGHT_X, &rx);
-    adc_oneshot_read(adc_handle_, PIN_RIGHT_Y, &ry);
+    int lx = 0, ly = 0, rx = 0, ry = 0;
+    
+    // 10x Oversampling drastically reduces jitter and physical drift.
+    // Explicitly initializes fallback vars at neutral 2048 to prevent rogue memory pointers
+    for (int i = 0; i < 10; i++) {
+        int val_lx = 2048, val_ly = 2048, val_rx = 2048, val_ry = 2048;
+        adc_oneshot_read(adc_handle_, PIN_LEFT_X, &val_lx);
+        adc_oneshot_read(adc_handle_, PIN_LEFT_Y, &val_ly);
+        adc_oneshot_read(adc_handle_, PIN_RIGHT_X, &val_rx);
+        adc_oneshot_read(adc_handle_, PIN_RIGHT_Y, &val_ry);
+        
+        lx += val_lx;
+        ly += val_ly;
+        rx += val_rx;
+        ry += val_ry;
+    }
 
-    auto map_axis = [](int val) -> int8_t {
-        int res = (val - 2048) / 16;
-        if (std::abs(res) < 15) return 0;
-        return (res > 127) ? 127 : (res < -128 ? -128 : res);
-    };
-
-    s.left_x = map_axis(lx);
-    s.left_y = -map_axis(ly);
-    s.right_x = map_axis(rx);
-    s.right_y = -map_axis(ry);
+    s.left_x = lx / 10;
+    s.left_y = ly / 10;
+    s.right_x = rx / 10;
+    s.right_y = ry / 10;
 
     return s;
 }
