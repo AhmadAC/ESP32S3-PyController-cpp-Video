@@ -4,7 +4,8 @@
 #include <cstdlib>
 
 #define ADC_UNIT ADC_UNIT_1
-#define ADC_ATTEN ADC_ATTEN_DB_12
+// CRITICAL FIX: Changed from ADC_ATTEN_DB_12 to ADC_ATTEN_DB_0 to match the hardware's 1.1V limit.
+#define ADC_ATTEN ADC_ATTEN_DB_0 
 
 // Pin Mapping
 #define PIN_LEFT_X ADC_CHANNEL_3  // GPIO 4
@@ -73,10 +74,8 @@ GamepadState Gamepad::read() {
 
     int lx = 0, ly = 0, rx = 0, ry = 0;
     
-    // 10x Oversampling drastically reduces jitter and physical drift.
-    // Explicitly initializes fallback vars at neutral 2048 to prevent rogue memory pointers
     for (int i = 0; i < 10; i++) {
-        int val_lx = 2048, val_ly = 2048, val_rx = 2048, val_ry = 2048;
+        int val_lx = 0, val_ly = 0, val_rx = 0, val_ry = 0;
         adc_oneshot_read(adc_handle_, PIN_LEFT_X, &val_lx);
         adc_oneshot_read(adc_handle_, PIN_LEFT_Y, &val_ly);
         adc_oneshot_read(adc_handle_, PIN_RIGHT_X, &val_rx);

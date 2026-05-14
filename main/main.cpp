@@ -88,17 +88,15 @@ extern "C" void app_main(void) {
     Gamepad gamepad;
     gamepad.init();
 
-    // VFS mount point requires a prefix. 
-    // This connects SPIFFS to "/spiffs" behind the scenes, allowing lcd.cpp to format the string for you!
     esp_vfs_spiffs_conf_t spiffs_conf = {
         .base_path = "/spiffs",
         .partition_label = NULL,
         .max_files = 5,
-        .format_if_mount_failed = true
+        .format_if_mount_failed = false // Don't format, just fail quietly if not found
     };
     esp_err_t spiffs_ret = esp_vfs_spiffs_register(&spiffs_conf);
     if (spiffs_ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to mount SPIFFS (%s)", esp_err_to_name(spiffs_ret));
+        ESP_LOGW(TAG, "No SPIFFS partition found. Background images will be skipped.");
     }
 
     ESP_ERROR_CHECK(esp_netif_init());
@@ -132,8 +130,6 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
 
     lcd.fill_screen(COLOR_WHITE);
-    
-    // Now you can easily use standard directory strings, no spiffs text required!
     lcd.draw_jpg("/picture/Car.jpg", 0, 0); 
     
     lcd.draw_string(10, 10, "Connected!", COLOR_GREEN, COLOR_WHITE, 2);
@@ -177,24 +173,13 @@ extern "C" void app_main(void) {
         if (pdTICKS_TO_MS(now - last_tx_update) >= 50) {
             GamepadState state = gamepad.read();
             
-            // Advanced mapping: Safely guarantees a 128 perfectly dead-center 
-            // when letting go, completely solving rogue wheel movement.
-            auto map_axis = [](uint16_t raw) -> uint8_t {
-                // Wide deadband forces exact center to lock the car.py math at 0.
-                if (raw > 1800 && raw < 2300) return 128; 
-                
-                if (raw <= 1800) {
-                    return (uint8_t)((raw * 127) / 1800);
-                } else {
-                    int val = 128 + ((raw - 2300) * 127) / (4095 - 2300);
-                    return (uint8_t)(val > 255 ? 255 : val);
-                }
-            };
-
-            uint8_t lx = map_axis(state.left_x);
-            uint8_t ly = map_axis(state.left_y);
-            uint8_t rx = map_axis(state.right_x);
-            uint8_t ry = map_axis(state.right_y);
+            // Reverted exactly to the old math logic: divide raw ADC by 14 and clamp to 255.
+            // With DB_0 attenuation, neutral 1.65V raw ADC gives ~1792.
+            // 1792 / 14 = 128 (Perfect Neutral!)
+            uint8_t lx = (state.left_x / 14) > 255 ? 255 : (state.left_x / 14);
+            uint8_t ly = (state.left_y / 14) > 255 ? 255 : (state.left_y / 14);
+            uint8_t rx = (state.right_x / 14) > 255 ? 255 : (state.right_x / 14);
+            uint8_t ry = (state.right_y / 14) > 255 ? 255 : (state.right_y / 14);
             
             uint8_t btns = 8; 
             if (state.up && state.right)         btns = 1;

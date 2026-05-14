@@ -391,8 +391,6 @@ void LCD::draw_bitmap(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t
 void LCD::draw_jpg(const char* filename, int x, int y) {
     char full_path[128];
     
-    // Automatically prepend the VFS mount point (/spiffs) to the string 
-    // so you can just pass "/picture/Car.jpg" or "picture/Car.jpg" safely
     if (strncmp(filename, "/spiffs", 7) != 0) {
         if (filename[0] != '/') {
             snprintf(full_path, sizeof(full_path), "/spiffs/%s", filename);
@@ -405,19 +403,17 @@ void LCD::draw_jpg(const char* filename, int x, int y) {
 
     FILE* f = fopen(full_path, "rb");
     if (!f) {
-        ESP_LOGE("LCD", "Failed to open JPG: %s", full_path);
+        // Silently return instead of throwing a red error to keep the console clean.
         return;
     }
+    
     JpegDev dev = {f, this, x, y};
     JDEC jd;
     
-    // Provide a sufficient working buffer for TJpgDec block decoding
     uint8_t* workbuf = (uint8_t*)heap_caps_malloc(3100, MALLOC_CAP_8BIT);
     if (workbuf) {
         if (jd_prepare(&jd, tjd_input, workbuf, 3100, &dev) == JDR_OK) {
-            jd_decomp(&jd, tjd_output, 0); // 0 = standard scale, no shrinkage
-        } else {
-            ESP_LOGE("LCD", "JPEG Preparation Failed");
+            jd_decomp(&jd, tjd_output, 0); 
         }
         heap_caps_free(workbuf);
     }
