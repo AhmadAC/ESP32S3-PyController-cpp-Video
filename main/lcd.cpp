@@ -99,7 +99,7 @@ static const unsigned char asc2_1608[95][16] = {
     {0x01,0x04,0x01,0xFC,0x00,0x84,0x01,0x00,0x01,0x00,0x01,0x04,0x00,0xFC,0x00,0x04},/*"n",78*/
     {0x00,0x00,0x00,0xF8,0x01,0x04,0x01,0x04,0x01,0x04,0x01,0x04,0x00,0xF8,0x00,0x00},/*"o",79*/
     {0x01,0x01,0x01,0xFF,0x00,0x85,0x01,0x04,0x01,0x04,0x00,0x88,0x00,0x70,0x00,0x00},/*"p",80*/
-    {0x00,0x00,0x00,0x70,0x00,0x88,0x01,0x04,0x01,0x04,0x01,0x05,0x1F,0xFF,0x00,0x01},/*"q",81*/ // Corrected
+    {0x00,0x00,0x00,0x70,0x00,0x88,0x01,0x04,0x01,0x04,0x01,0x05,0x1F,0xFF,0x00,0x01},/*"q",81*/
     {0x01,0x04,0x01,0x04,0x01,0xFC,0x00,0x84,0x01,0x04,0x01,0x00,0x01,0x80,0x00,0x00},/*"r",82*/
     {0x00,0x00,0x00,0xCC,0x01,0x24,0x01,0x24,0x01,0x24,0x01,0x24,0x01,0x98,0x00,0x00},/*"s",83*/
     {0x00,0x00,0x01,0x00,0x01,0x00,0x07,0xF8,0x01,0x04,0x01,0x04,0x00,0x00,0x00,0x00},/*"t",84*/
@@ -118,11 +118,22 @@ static const unsigned char asc2_1608[95][16] = {
 // ----------------------------------------------------
 // JPG Helper structs & callbacks
 // ----------------------------------------------------
-struct JpegDev {
-    FILE* fp;
+struct JpegDevBase {
     LCD* lcd;
     int x_off;
     int y_off;
+};
+
+struct JpegDev {
+    JpegDevBase base;
+    FILE* fp;
+};
+
+struct JpegDevMem {
+    JpegDevBase base;
+    const uint8_t* data;
+    size_t len;
+    size_t offset;
 };
 
 static unsigned int tjd_input(JDEC* jd, uint8_t* buff, unsigned int nd) {
@@ -135,8 +146,20 @@ static unsigned int tjd_input(JDEC* jd, uint8_t* buff, unsigned int nd) {
     }
 }
 
+static unsigned int tjd_input_mem(JDEC* jd, uint8_t* buff, unsigned int nd) {
+    JpegDevMem* dev = (JpegDevMem*)jd->device;
+    if (dev->offset + nd > dev->len) {
+        nd = dev->len - dev->offset;
+    }
+    if (buff) {
+        memcpy(buff, dev->data + dev->offset, nd);
+    }
+    dev->offset += nd;
+    return nd;
+}
+
 static unsigned int tjd_output(JDEC* jd, void* bitmap, JRECT* rect) {
-    JpegDev* dev = (JpegDev*)jd->device;
+    JpegDevBase* dev = (JpegDevBase*)jd->device;
     uint16_t w = rect->right - rect->left + 1;
     uint16_t h = rect->bottom - rect->top + 1;
     dev->lcd->draw_bitmap(dev->x_off + rect->left, dev->y_off + rect->top, w, h, (const uint16_t*)bitmap);
@@ -372,16 +395,36 @@ void LCD::draw_string(int16_t x, int16_t y, const char* str, uint16_t color, uin
 }
 
 void LCD::draw_bitmap(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* data) {
-    if (w == 0 || h == 0) return;
-    set_address_window(x, y, x + w - 1, y + h - 1);
+    if (w <= 0 || h <= 0) return;
     
-    int len = w * h * 2;
+    int16_t start_x = x < 0 ? 0 : x;
+    int16_t start_y = y < 0 ? 0 : y;
+    int16_t end_x = x + w - 1;
+    int16_t end_y = y + h - 1;
+    
+    if (end_x >= DISP_WIDTH) end_x = DISP_WIDTH - 1;
+    if (end_y >= DISP_HEIGHT) end_y = DISP_HEIGHT - 1;
+    
+    int16_t draw_w = end_x - start_x + 1;
+    int16_t draw_h = end_y - start_y + 1;
+    
+    if (draw_w <= 0 || draw_h <= 0) return;
+
+    set_address_window(start_x, start_y, end_x, end_y);
+    
+    int len = draw_w * draw_h * 2;
     uint8_t* buffer = (uint8_t*)heap_caps_malloc(len, MALLOC_CAP_DMA);
     if (buffer) {
-        // Swap bytes because ESP32 is little-endian and ST7789 expects big-endian over SPI
-        for (int i = 0; i < w * h; i++) {
-            buffer[i * 2] = data[i] >> 8;
-            buffer[i * 2 + 1] = data[i] & 0xFF;
+        int src_x_offset = start_x - x;
+        int src_y_offset = start_y - y;
+        
+        for (int r = 0; r < draw_h; r++) {
+            for (int c = 0; c < draw_w; c++) {
+                int src_idx = (r + src_y_offset) * w + (c + src_x_offset);
+                int dst_idx = r * draw_w + c;
+                buffer[dst_idx * 2] = data[src_idx] >> 8;
+                buffer[dst_idx * 2 + 1] = data[src_idx] & 0xFF;
+            }
         }
         send_data(buffer, len);
         heap_caps_free(buffer);
@@ -407,10 +450,13 @@ void LCD::draw_jpg(const char* filename, int x, int y) {
         return;
     }
     
-    JpegDev dev = {f, this, x, y};
-    JDEC jd;
+    JpegDev dev;
+    dev.base.lcd = this;
+    dev.base.x_off = x;
+    dev.base.y_off = y;
+    dev.fp = f;
     
-    // Increased from 3100 to 8192 to prevent JDR_MEM1 (memory allocation) failures.
+    JDEC jd;
     size_t worksz = 8192; 
     uint8_t* workbuf = (uint8_t*)heap_caps_malloc(worksz, MALLOC_CAP_8BIT);
     
@@ -430,4 +476,35 @@ void LCD::draw_jpg(const char* filename, int x, int y) {
     }
     
     fclose(f);
+}
+
+void LCD::draw_jpg_mem(const uint8_t* img_data, size_t len, int x, int y) {
+    if (!img_data || len == 0) return;
+    
+    JpegDevMem dev;
+    dev.base.lcd = this;
+    dev.base.x_off = x;
+    dev.base.y_off = y;
+    dev.data = img_data;
+    dev.len = len;
+    dev.offset = 0;
+    
+    JDEC jd;
+    size_t worksz = 8192; 
+    uint8_t* workbuf = (uint8_t*)heap_caps_malloc(worksz, MALLOC_CAP_8BIT);
+    
+    if (workbuf) {
+        JRESULT rc = jd_prepare(&jd, tjd_input_mem, workbuf, worksz, &dev);
+        if (rc == JDR_OK) {
+            rc = jd_decomp(&jd, tjd_output, 0); 
+            if (rc != JDR_OK) {
+                ESP_LOGE("LCD", "JPG decomp failed with mem code: %d", rc);
+            }
+        } else {
+            ESP_LOGE("LCD", "JPG mem prepare failed: %d", rc);
+        }
+        heap_caps_free(workbuf);
+    } else {
+        ESP_LOGE("LCD", "Failed to allocate JPG work buffer");
+    }
 }

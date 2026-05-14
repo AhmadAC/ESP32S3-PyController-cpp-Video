@@ -3,6 +3,7 @@
 
 #include "driver/spi_master.h"
 #include <stdint.h>
+#include <stddef.h>
 
 #define COLOR_BLACK   0x0000
 #define COLOR_WHITE   0xFFFF
@@ -25,6 +26,7 @@ public:
     // Advanced block & JPG rendering
     void draw_bitmap(int16_t x, int16_t y, int16_t w, int16_t h, const uint16_t* data);
     void draw_jpg(const char* filename, int x, int y);
+    void draw_jpg_mem(const uint8_t* img_data, size_t len, int x, int y);
 
 private:
     void send_cmd(uint8_t cmd);

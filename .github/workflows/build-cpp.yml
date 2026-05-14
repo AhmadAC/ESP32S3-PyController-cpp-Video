@@ -3,9 +3,9 @@ name: Build C++ Firmware
 
 on:
   push:
-    branches: [ restart, master ]
+    branches: [ pycam, master ]
   pull_request:
-    branches: [ restart, master ]
+    branches: [ pycam, master ]
   workflow_dispatch: 
 
 jobs:

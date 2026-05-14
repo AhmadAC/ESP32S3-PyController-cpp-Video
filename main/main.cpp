@@ -10,6 +10,7 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_spiffs.h"
+#include "esp_heap_caps.h"
 
 #include "lcd.h"
 #include "gamepad.hpp"
@@ -17,29 +18,91 @@
 static const char *TAG = "pyController";
 
 // --- Global State Variables ---
-static volatile bool is_paired = false;
 static volatile bool has_car = false;
+static volatile bool has_cam = false;
 
-static uint8_t peer_mac[6] = {0};
+static uint8_t peer_mac[6] = {0}; // Car MAC
+static uint8_t cam_mac[6]  = {0}; // Cam MAC
 static const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 static char distance_str[32] = "0.00 cm";
 static bool line_follower_state = false;
 static bool sync_state = false;
 
+// --- Image Reception Variables ---
+static uint8_t* img_buf = nullptr;
+static size_t img_len = 0;
+static int img_chunks_received = 0;
+static int img_total_chunks = 0;
+static volatile bool img_ready = false;
+
 // --- ESP-NOW Receive Callback ---
 void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int data_len) {
     if (data == NULL || data_len <= 0) return;
 
     if (data_len == 9 && memcmp(data, "pyCAR_ACK", 9) == 0) {
-        if (!is_paired) {
+        if (!has_car) {
             memcpy((void*)peer_mac, esp_now_info->src_addr, 6);
-            is_paired = true;
+            has_car = true;
+            esp_now_peer_info_t peer_info = {};
+            peer_info.channel = 1;
+            peer_info.encrypt = false;
+            memcpy(peer_info.peer_addr, peer_mac, 6);
+            if (!esp_now_is_peer_exist(peer_mac)) {
+                esp_now_add_peer(&peer_info);
+            }
         }
-        has_car = true;
         return;
     }
     
+    if (data_len == 9 && memcmp(data, "pyCAM_ACK", 9) == 0) {
+        if (!has_cam) {
+            memcpy((void*)cam_mac, esp_now_info->src_addr, 6);
+            has_cam = true;
+            esp_now_peer_info_t peer_info = {};
+            peer_info.channel = 1;
+            peer_info.encrypt = false;
+            memcpy(peer_info.peer_addr, cam_mac, 6);
+            if (!esp_now_is_peer_exist(cam_mac)) {
+                esp_now_add_peer(&peer_info);
+            }
+        }
+        return;
+    }
+
+    // Reassemble incoming image chunks into active memory
+    if (data_len >= 8 && data[0] == 'C' && data[1] == 'I') {
+        uint16_t chunk_idx; memcpy(&chunk_idx, &data[2], 2);
+        uint16_t total_chunks; memcpy(&total_chunks, &data[4], 2);
+        uint16_t len; memcpy(&len, &data[6], 2);
+        
+        if (chunk_idx == 0) {
+            if (total_chunks > 400) return; // Ignore wildly unsafe sizes
+
+            if (img_buf) {
+                heap_caps_free(img_buf);
+                img_buf = nullptr;
+            }
+            img_buf = (uint8_t*)heap_caps_malloc(total_chunks * 240, MALLOC_CAP_8BIT); 
+            img_chunks_received = 0;
+            img_total_chunks = total_chunks;
+            img_len = 0;
+            img_ready = false;
+        }
+        
+        if (img_buf && chunk_idx == img_chunks_received && total_chunks == img_total_chunks) {
+            memcpy(img_buf + img_len, &data[8], len);
+            img_len += len;
+            img_chunks_received++;
+            
+            if (img_chunks_received == img_total_chunks) {
+                img_ready = true;
+            }
+        }
+        return;
+    }
+    
+    // Existing pyCar state logic telemetry
     if (data_len >= 2 && data[0] == 'D' && data[1] == ':') {
         has_car = true;
         char buf[64] = {0};
@@ -121,15 +184,13 @@ extern "C" void app_main(void) {
 
     lcd.fill_screen(COLOR_WHITE);
     lcd.draw_string(10, 100, "Searching for", COLOR_BLACK, COLOR_WHITE, 2);
-    lcd.draw_string(10, 130, "pyCar...", COLOR_BLACK, COLOR_WHITE, 2);
+    lcd.draw_string(10, 130, "pyCar/pyCam...", COLOR_BLACK, COLOR_WHITE, 2);
 
-    while (!is_paired) {
+    // Initial sequence discovery boot blocker. Boot sequence breaks free after finding at least one node!
+    while (!has_car && !has_cam) {
         esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-
-    memcpy(peer_info.peer_addr, peer_mac, 6);
-    ESP_ERROR_CHECK(esp_now_add_peer(&peer_info));
 
     lcd.fill_screen(COLOR_WHITE);
     lcd.draw_jpg("/Car.jpg", 0, 0); 
@@ -139,12 +200,41 @@ extern "C" void app_main(void) {
 
     TickType_t last_lcd_update = xTaskGetTickCount();
     TickType_t last_tx_update = xTaskGetTickCount();
+    TickType_t last_discover = xTaskGetTickCount();
+
     char last_dist_str_on_screen[32] = "";
     bool last_lf_state = false;
     bool last_sync_state = false;
+    bool last_x_state = false;
+    bool last_cam_state = false;
 
     while (true) {
         TickType_t now = xTaskGetTickCount();
+
+        // Dynamically continue hunting globally if one device hasn't booted up yet
+        if (!has_car || !has_cam) {
+            if (pdTICKS_TO_MS(now - last_discover) >= 3000) {
+                esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
+                last_discover = now;
+            }
+        }
+
+        // Draw image asynchronously exactly when buffer clears ready state!
+        if (img_ready) {
+            // Draw QVGA (320x240) shifted -40x centering perfectly onto the 240x240 hardware boundaries
+            lcd.draw_jpg_mem(img_buf, img_len, -40, 0);
+            img_ready = false;
+            
+            // Deliberately reset UI cache variables so HUD overlays write cleanly on top of image next pass
+            strcpy(last_dist_str_on_screen, "");
+            last_lf_state = !line_follower_state;
+            last_sync_state = !sync_state;
+            last_cam_state = !has_cam; 
+            
+            lcd.draw_string(10, 10, "Connected!", COLOR_GREEN, COLOR_WHITE, 2);
+            lcd.draw_string(10, 160, "Ultrasonic:", COLOR_BLACK, COLOR_WHITE, 2);
+            lcd.draw_string(10, 220, "          ", COLOR_WHITE, COLOR_WHITE, 1); // clears req text
+        }
 
         // A. RATE-LIMITED LCD UPDATE
         if (pdTICKS_TO_MS(now - last_lcd_update) >= 200) {
@@ -168,6 +258,11 @@ extern "C" void app_main(void) {
                     last_sync_state = sync_state;
                 }
             } 
+            if (has_cam != last_cam_state) {
+                const char* icon = has_cam ? "[C]" : "   ";
+                lcd.draw_string(150, 10, icon, COLOR_BLUE, COLOR_WHITE, 2);
+                last_cam_state = has_cam;
+            }
             last_lcd_update = now;
         }
 
@@ -175,9 +270,15 @@ extern "C" void app_main(void) {
         if (pdTICKS_TO_MS(now - last_tx_update) >= 50) {
             GamepadState state = gamepad.read();
             
-            // Reverted exactly to the old math logic: divide raw ADC by 14 and clamp to 255.
-            // With DB_0 attenuation, neutral 1.65V raw ADC gives ~1792.
-            // 1792 / 14 = 128 (Perfect Neutral!)
+            // X Button Pulse Event Handler
+            if (state.x && !last_x_state) {
+                if (has_cam) {
+                    esp_now_send(cam_mac, (const uint8_t*)"pyCAM_REQ", 9);
+                    lcd.draw_string(10, 220, "Req Cam...", COLOR_RED, COLOR_WHITE, 1);
+                }
+            }
+            last_x_state = state.x;
+
             uint8_t lx = (state.left_x / 14) > 255 ? 255 : (state.left_x / 14);
             uint8_t ly = (state.left_y / 14) > 255 ? 255 : (state.left_y / 14);
             uint8_t rx = (state.right_x / 14) > 255 ? 255 : (state.right_x / 14);
@@ -199,7 +300,10 @@ extern "C" void app_main(void) {
             if (state.y) btns |= (1 << 4);
 
             uint8_t payload[6] = {67, lx, ly, rx, ry, btns};
-            esp_now_send(peer_mac, payload, sizeof(payload));
+            
+            if (has_car) {
+                esp_now_send(peer_mac, payload, sizeof(payload));
+            }
 
             last_tx_update = now;
         }
