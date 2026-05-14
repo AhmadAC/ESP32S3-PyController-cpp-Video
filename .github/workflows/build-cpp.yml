@@ -1,3 +1,4 @@
+#################### START OF FILE: .github\workflows\build-cpp.yml ####################
 name: Build C++ Firmware
 
 on:
@@ -14,31 +15,16 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup ESP-IDF
+      - name: Build Firmware and Merge Binaries
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.3.1
           target: esp32s3
-          
-      - name: Build Firmware and SPIFFS Image
-        run: |
-          # 1. Standard build to generate app, bootloader, and partition table
-          idf.py build
+          # Run the build and the esptool merge inside the ESP-IDF container
+          # Note: Since FLASH_IN_PROJECT is used in CMakeLists.txt, idf.py build automatically 
+          # builds spiffs.bin and adds it to flash_args.
+          command: 'idf.py build && cd build && esptool.py --chip esp32s3 merge_bin -o merged-pycontroller-s3.bin --fill-flash-size 4MB @flash_args'
 
-          # 2. Build the SPIFFS image from the 'data' folder
-          idf.py spiffs_create_image
-
-      - name: Merge All Binaries
-        run: |
-          # 3. Install esptool
-          pip install esptool
-          
-          # 4. Enter the build directory so the paths resolve correctly
-          cd build
-          
-          # 5. Run merge_bin, now INCLUDING the spiffs.bin file at its correct offset from partitions.csv
-          python -m esptool --chip esp32s3 merge_bin -o merged-pycontroller-s3.bin --fill-flash-size 4MB @flash_args spiffs.bin
-          
       - name: Upload Firmware Artifact
         uses: actions/upload-artifact@v4
         with:
