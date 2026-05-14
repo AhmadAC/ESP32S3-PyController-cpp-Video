@@ -194,9 +194,6 @@ extern "C" void app_main(void) {
 
     lcd.fill_screen(COLOR_WHITE);
     lcd.draw_jpg("/Car.jpg", 0, 0); 
-    
-    lcd.draw_string(10, 10, "Connected!", COLOR_GREEN, COLOR_WHITE, 2);
-    lcd.draw_string(10, 160, "Ultrasonic:", COLOR_BLACK, COLOR_WHITE, 2);
 
     TickType_t last_lcd_update = xTaskGetTickCount();
     TickType_t last_tx_update = xTaskGetTickCount();
@@ -231,8 +228,6 @@ extern "C" void app_main(void) {
             last_sync_state = !sync_state;
             last_cam_state = !has_cam; 
             
-            lcd.draw_string(10, 10, "Connected!", COLOR_GREEN, COLOR_WHITE, 2);
-            lcd.draw_string(10, 160, "Ultrasonic:", COLOR_BLACK, COLOR_WHITE, 2);
             lcd.draw_string(10, 220, "          ", COLOR_WHITE, COLOR_WHITE, 1); // clears req text
         }
 
