@@ -1,7 +1,7 @@
 // main/main.cpp
 #include <stdio.h>
 #include <string.h>
-#include "freertos/FreeRTOS.h"
+#include "freertos/FreeRTOS.hh"
 #include "freertos/task.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
@@ -203,7 +203,6 @@ extern "C" void app_main(void) {
     bool last_lf_state = false;
     bool last_sync_state = false;
     bool last_x_state = false;
-    bool last_cam_state = false;
 
     while (true) {
         TickType_t now = xTaskGetTickCount();
@@ -226,7 +225,6 @@ extern "C" void app_main(void) {
             strcpy(last_dist_str_on_screen, "");
             last_lf_state = !line_follower_state;
             last_sync_state = !sync_state;
-            last_cam_state = !has_cam; 
             
             lcd.draw_string(10, 220, "          ", COLOR_WHITE, COLOR_WHITE, 1); // clears req text
         }
@@ -253,11 +251,6 @@ extern "C" void app_main(void) {
                     last_sync_state = sync_state;
                 }
             } 
-            if (has_cam != last_cam_state) {
-                const char* icon = has_cam ? "[C]" : "   ";
-                lcd.draw_string(150, 10, icon, COLOR_BLUE, COLOR_WHITE, 2);
-                last_cam_state = has_cam;
-            }
             last_lcd_update = now;
         }
 
