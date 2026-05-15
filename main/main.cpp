@@ -37,6 +37,17 @@ static int img_chunks_received = 0;
 static int img_total_chunks = 0;
 static volatile bool img_ready = false;
 
+// Helper to draw clean circles without background white rectangles
+void fill_circle(LCD& lcd, int x0, int y0, int r, uint16_t color) {
+    for (int y = -r; y <= r; y++) {
+        for (int x = -r; x <= r; x++) {
+            if (x * x + y * y <= r * r) {
+                lcd.draw_pixel(x0 + x, y0 + y, color);
+            }
+        }
+    }
+}
+
 // --- RAW Wi-Fi Promiscuous Callback for High-Speed MJPEG ---
 void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     if (type != WIFI_PKT_DATA) return;
@@ -45,20 +56,17 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     uint8_t *payload = pkt->payload;
     uint16_t pkt_len = pkt->rx_ctrl.sig_len;
 
-    if (pkt_len < 33) return; // 24 MAC header + 9 custom header minimum
+    if (pkt_len < 33) return; 
 
-    // Check if it's our standard 802.11 Data Frame format
     uint16_t fc;
     memcpy(&fc, payload, 2);
     if (fc != 0x0008) return; 
 
-    // CRITICAL FIX: Also accept frames addressed to the global Broadcast MAC
     if (memcmp(payload + 4, my_mac, 6) != 0 && memcmp(payload + 4, broadcast_mac, 6) != 0) return;
 
-    // Check custom signature payload starting at byte 24
     uint8_t *custom = payload + 24;
     if (custom[0] == 'C' && custom[1] == 'A' && custom[2] == 'M') {
-        if (img_ready) return; // Drop frame gracefully if decoder is busy
+        if (img_ready) return; 
 
         uint16_t chunk_idx, total_chunks, len;
         memcpy(&chunk_idx, custom + 3, 2);
@@ -66,14 +74,12 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
         memcpy(&len, custom + 7, 2);
         
         if (chunk_idx == 0) {
-            if (total_chunks > 100) return; // Avoid overflow
+            if (total_chunks > 100) return; 
             
             if (img_buf) {
                 heap_caps_free(img_buf);
                 img_buf = nullptr;
             }
-            // CRITICAL FIX: Increased memory allocation from 1024 to 1400 bytes per chunk 
-            // to safely hold the new 1300-byte raw 802.11 fragments!
             img_buf = (uint8_t*)heap_caps_malloc(total_chunks * 1400, MALLOC_CAP_8BIT);
             img_chunks_received = 0;
             img_total_chunks = total_chunks;
@@ -81,7 +87,6 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
         }
 
         if (img_buf && chunk_idx == img_chunks_received && total_chunks == img_total_chunks) {
-            // Buffer overflow safeguard logic
             if (img_len + len <= total_chunks * 1400) {
                 memcpy(img_buf + img_len, custom + 9, len);
                 img_len += len;
@@ -95,7 +100,7 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     }
 }
 
-// --- ESP-NOW Receive Callback (Car & Camera Discovery / Telemetry Only) ---
+// --- ESP-NOW Receive Callback ---
 void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int data_len) {
     if (data == NULL || data_len <= 0) return;
 
@@ -107,9 +112,7 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
             peer_info.channel = 1;
             peer_info.encrypt = false;
             memcpy(peer_info.peer_addr, peer_mac, 6);
-            if (!esp_now_is_peer_exist(peer_mac)) {
-                esp_now_add_peer(&peer_info);
-            }
+            if (!esp_now_is_peer_exist(peer_mac)) esp_now_add_peer(&peer_info);
         }
         return;
     }
@@ -122,14 +125,11 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
             peer_info.channel = 1;
             peer_info.encrypt = false;
             memcpy(peer_info.peer_addr, cam_mac, 6);
-            if (!esp_now_is_peer_exist(cam_mac)) {
-                esp_now_add_peer(&peer_info);
-            }
+            if (!esp_now_is_peer_exist(cam_mac)) esp_now_add_peer(&peer_info);
         }
         return;
     }
 
-    // Existing pyCar state logic telemetry
     if (data_len >= 2 && data[0] == 'D' && data[1] == ':') {
         has_car = true;
         char buf[64] = {0};
@@ -146,17 +146,13 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
         char *l_ptr = strstr(buf, "L:");
         if (l_ptr) {
             int lf = 0;
-            if (sscanf(l_ptr, "L:%d", &lf) == 1) {
-                line_follower_state = (lf == 1);
-            }
+            if (sscanf(l_ptr, "L:%d", &lf) == 1) line_follower_state = (lf == 1);
         }
 
         char *x_ptr = strstr(buf, "X:");
         if (x_ptr) {
             int sync = 0;
-            if (sscanf(x_ptr, "X:%d", &sync) == 1) {
-                sync_state = (sync == 1);
-            }
+            if (sscanf(x_ptr, "X:%d", &sync) == 1) sync_state = (sync == 1);
         }
     }
 }
@@ -186,9 +182,7 @@ extern "C" void app_main(void) {
     };
     esp_err_t spiffs_ret = esp_vfs_spiffs_register(&spiffs_conf);
     if (spiffs_ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to mount SPIFFS (%s). Background images will be skipped.", esp_err_to_name(spiffs_ret));
-    } else {
-        ESP_LOGI(TAG, "SPIFFS mounted successfully!");
+        ESP_LOGE(TAG, "Failed to mount SPIFFS (%s).", esp_err_to_name(spiffs_ret));
     }
 
     ESP_ERROR_CHECK(esp_netif_init());
@@ -199,11 +193,8 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));
-
-    // Cache the receiver MAC to handle incoming packet validation
     ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, my_mac));
 
-    // Enable Promiscuous Mode to listen for Raw Wi-Fi Injections from the pyCam
     wifi_promiscuous_filter_t filter = {};
     filter.filter_mask = WIFI_PROMIS_FILTER_MASK_DATA | WIFI_PROMIS_FILTER_MASK_MGMT;
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_filter(&filter));
@@ -223,7 +214,6 @@ extern "C" void app_main(void) {
     lcd.draw_string(10, 100, "Searching for", COLOR_BLACK, COLOR_WHITE, 2);
     lcd.draw_string(10, 130, "pyCar/pyCam...", COLOR_BLACK, COLOR_WHITE, 2);
 
-    // Initial sequence discovery boot blocker. Boot sequence breaks free after finding at least one node!
     while (!has_car && !has_cam) {
         esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -240,13 +230,15 @@ extern "C" void app_main(void) {
     bool last_lf_state = false;
     bool last_sync_state = false;
     bool last_x_state = false;
-    bool last_a_state = false;
-    bool mjpeg_stream_active = false;
+    bool last_start_state = false;
+    bool last_back_state = false;
+    
+    bool show_camera_feed = false;
+    bool sonar_active = true;
 
     while (true) {
         TickType_t now = xTaskGetTickCount();
 
-        // Dynamically continue hunting globally if one device hasn't booted up yet
         if (!has_car || !has_cam) {
             if (pdTICKS_TO_MS(now - last_discover) >= 3000) {
                 esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
@@ -254,37 +246,43 @@ extern "C" void app_main(void) {
             }
         }
 
-        // Draw image asynchronously exactly when buffer clears ready state!
+        // Draw image asynchronously. Completely skips UI overlays for a pure cinematic feed.
         if (img_ready) {
-            // Draw QVGA (320x240) shifted -40x centering perfectly onto the 240x240 hardware boundaries
-            lcd.draw_jpg_mem(img_buf, img_len, -40, 0);
+            if (show_camera_feed) {
+                lcd.draw_jpg_mem(img_buf, img_len, -40, 0);
+            }
             img_ready = false;
-            
-            // Deliberately reset UI cache variables so HUD overlays write cleanly on top of image next pass
-            strcpy(last_dist_str_on_screen, "");
-            last_lf_state = !line_follower_state;
-            last_sync_state = !sync_state;
         }
 
-        // A. RATE-LIMITED LCD UPDATE
+        // A. RATE-LIMITED LCD UPDATE (HUD Mode)
         if (pdTICKS_TO_MS(now - last_lcd_update) >= 200) {
-            if (has_car) {
-                if (strcmp(distance_str, last_dist_str_on_screen) != 0) {
-                    char padded_text[32];
-                    snprintf(padded_text, sizeof(padded_text), "%-12s", distance_str);
-                    lcd.draw_string(10, 190, padded_text, COLOR_BLACK, COLOR_WHITE, 2);
-                    strcpy(last_dist_str_on_screen, distance_str);
+            // Only draw HUD elements if the camera is NOT displaying over them
+            if (has_car && !show_camera_feed) {
+                
+                // Draw Sonar Distance Text
+                if (sonar_active) {
+                    if (strcmp(distance_str, last_dist_str_on_screen) != 0) {
+                        char padded_text[32];
+                        snprintf(padded_text, sizeof(padded_text), "%-12s", distance_str);
+                        lcd.draw_string(10, 190, padded_text, COLOR_BLACK, COLOR_WHITE, 2);
+                        strcpy(last_dist_str_on_screen, distance_str);
+                    }
                 }
-                if (line_follower_state != last_lf_state) {
-                    const char* icon = line_follower_state ? "[L]" : "   ";
-                    uint16_t fg_color = line_follower_state ? COLOR_BLACK : COLOR_WHITE;
-                    lcd.draw_string(210, 10, icon, fg_color, COLOR_WHITE, 2);
+
+                // Draw Top-Right Graphic Indicators
+                if (line_follower_state != last_lf_state || sync_state != last_sync_state) {
+                    
+                    // If a circle turned OFF, seamlessly redraw the base image to erase it cleanly
+                    if ((last_lf_state && !line_follower_state) || (last_sync_state && !sync_state)) {
+                        lcd.draw_jpg("/Car.jpg", 0, 0);
+                        strcpy(last_dist_str_on_screen, ""); // Force text redraw after background erase
+                    }
+
+                    // Redraw active state graphics
+                    if (line_follower_state) fill_circle(lcd, 220, 20, 6, COLOR_BLACK);
+                    if (sync_state) fill_circle(lcd, 195, 20, 6, COLOR_RED);
+
                     last_lf_state = line_follower_state;
-                }
-                if (sync_state != last_sync_state) {
-                    const char* icon = sync_state ? "[X]" : "   ";
-                    uint16_t fg_color = sync_state ? COLOR_RED : COLOR_WHITE;
-                    lcd.draw_string(180, 10, icon, fg_color, COLOR_WHITE, 2);
                     last_sync_state = sync_state;
                 }
             } 
@@ -295,27 +293,59 @@ extern "C" void app_main(void) {
         if (pdTICKS_TO_MS(now - last_tx_update) >= 50) {
             GamepadState state = gamepad.read();
             
-            // X Button Pulse Event Handler
+            // X Button (Request Single Photo)
             if (state.x && !last_x_state) {
-                if (has_cam) {
-                    esp_now_send(cam_mac, (const uint8_t*)"pyCAM_REQ", 9);
-                }
+                if (has_cam) esp_now_send(cam_mac, (const uint8_t*)"pyCAM_REQ", 9);
             }
             last_x_state = state.x;
 
-            // A Button Toggle Event Handler
-            if (state.a && !last_a_state) {
+            // START Button (Toggle Camera Live Stream to LCD)
+            if (state.start && !last_start_state) {
                 if (has_cam) {
-                    mjpeg_stream_active = !mjpeg_stream_active;
-                    if (mjpeg_stream_active) {
+                    show_camera_feed = !show_camera_feed;
+                    if (show_camera_feed) {
                         esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_1", 11);
                     } else {
                         esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_0", 11);
+                        
+                        // When exiting camera, instantly restore PyCar backdrop and refresh UI variables
+                        lcd.draw_jpg("/Car.jpg", 0, 0);
+                        strcpy(last_dist_str_on_screen, "");
+                        
+                        if (line_follower_state) fill_circle(lcd, 220, 20, 6, COLOR_BLACK);
+                        if (sync_state) fill_circle(lcd, 195, 20, 6, COLOR_RED);
+                        
+                        last_lf_state = line_follower_state;
+                        last_sync_state = sync_state;
                     }
                 }
             }
-            last_a_state = state.a;
+            last_start_state = state.start;
 
+            // BACK Button (Toggle Car Hardware Forward Restriction Sonar)
+            if (state.back && !last_back_state) {
+                sonar_active = !sonar_active;
+                if (sonar_active) {
+                    if (has_car) esp_now_send(peer_mac, (const uint8_t*)"pyCAR_SONAR_1", 13);
+                    strcpy(last_dist_str_on_screen, ""); // Force text to reappear
+                } else {
+                    if (has_car) esp_now_send(peer_mac, (const uint8_t*)"pyCAR_SONAR_0", 13);
+                    
+                    // Seamlessly erase the text by redrawing the backdrop if not in video mode
+                    if (!show_camera_feed) {
+                        lcd.draw_jpg("/Car.jpg", 0, 0);
+                        if (line_follower_state) fill_circle(lcd, 220, 20, 6, COLOR_BLACK);
+                        if (sync_state) fill_circle(lcd, 195, 20, 6, COLOR_RED);
+                        strcpy(last_dist_str_on_screen, "");
+                        
+                        last_lf_state = line_follower_state;
+                        last_sync_state = sync_state;
+                    }
+                }
+            }
+            last_back_state = state.back;
+
+            // Hardware Stick Mapping & Output Transmission
             uint8_t lx = (state.left_x / 14) > 255 ? 255 : (state.left_x / 14);
             uint8_t ly = (state.left_y / 14) > 255 ? 255 : (state.left_y / 14);
             uint8_t rx = (state.right_x / 14) > 255 ? 255 : (state.right_x / 14);
