@@ -264,12 +264,6 @@ extern "C" void app_main(void) {
             strcpy(last_dist_str_on_screen, "");
             last_lf_state = !line_follower_state;
             last_sync_state = !sync_state;
-            
-            if (mjpeg_stream_active) {
-                lcd.draw_string(10, 220, "Stream On ", COLOR_RED, COLOR_WHITE, 1);
-            } else {
-                lcd.draw_string(10, 220, "          ", COLOR_WHITE, COLOR_WHITE, 1); // clears req text
-            }
         }
 
         // A. RATE-LIMITED LCD UPDATE
@@ -305,7 +299,6 @@ extern "C" void app_main(void) {
             if (state.x && !last_x_state) {
                 if (has_cam) {
                     esp_now_send(cam_mac, (const uint8_t*)"pyCAM_REQ", 9);
-                    lcd.draw_string(10, 220, "Req Cam...", COLOR_RED, COLOR_WHITE, 1);
                 }
             }
             last_x_state = state.x;
@@ -316,10 +309,8 @@ extern "C" void app_main(void) {
                     mjpeg_stream_active = !mjpeg_stream_active;
                     if (mjpeg_stream_active) {
                         esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_1", 11);
-                        lcd.draw_string(10, 220, "Stream On ", COLOR_RED, COLOR_WHITE, 1);
                     } else {
                         esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_0", 11);
-                        lcd.draw_string(10, 220, "Stream Off", COLOR_RED, COLOR_WHITE, 1);
                     }
                 }
             }
