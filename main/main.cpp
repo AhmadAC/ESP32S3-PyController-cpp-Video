@@ -52,8 +52,8 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     memcpy(&fc, payload, 2);
     if (fc != 0x0008) return; 
 
-    // Check if Addr1 (Destination MAC) matches my_mac
-    if (memcmp(payload + 4, my_mac, 6) != 0) return;
+    // CRITICAL FIX: Also accept frames addressed to the global Broadcast MAC
+    if (memcmp(payload + 4, my_mac, 6) != 0 && memcmp(payload + 4, broadcast_mac, 6) != 0) return;
 
     // Check custom signature payload starting at byte 24
     uint8_t *custom = payload + 24;
@@ -66,25 +66,30 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
         memcpy(&len, custom + 7, 2);
         
         if (chunk_idx == 0) {
-            if (total_chunks > 100) return; // Avoid overflow (100 * 1024 bytes = 100KB safe limit)
+            if (total_chunks > 100) return; // Avoid overflow
             
             if (img_buf) {
                 heap_caps_free(img_buf);
                 img_buf = nullptr;
             }
-            img_buf = (uint8_t*)heap_caps_malloc(total_chunks * 1024, MALLOC_CAP_8BIT);
+            // CRITICAL FIX: Increased memory allocation from 1024 to 1400 bytes per chunk 
+            // to safely hold the new 1300-byte raw 802.11 fragments!
+            img_buf = (uint8_t*)heap_caps_malloc(total_chunks * 1400, MALLOC_CAP_8BIT);
             img_chunks_received = 0;
             img_total_chunks = total_chunks;
             img_len = 0;
         }
 
         if (img_buf && chunk_idx == img_chunks_received && total_chunks == img_total_chunks) {
-            memcpy(img_buf + img_len, custom + 9, len);
-            img_len += len;
-            img_chunks_received++;
-            
-            if (img_chunks_received == img_total_chunks) {
-                img_ready = true;
+            // Buffer overflow safeguard logic
+            if (img_len + len <= total_chunks * 1400) {
+                memcpy(img_buf + img_len, custom + 9, len);
+                img_len += len;
+                img_chunks_received++;
+                
+                if (img_chunks_received == img_total_chunks) {
+                    img_ready = true;
+                }
             }
         }
     }
