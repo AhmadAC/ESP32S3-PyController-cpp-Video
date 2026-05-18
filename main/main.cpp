@@ -1,4 +1,3 @@
-// ESP32S3-PyController-cpp-Video\main\main.cpp
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -246,17 +245,16 @@ extern "C" void app_main(void) {
             }
         }
 
-        // Draw image asynchronously. Completely skips UI overlays for a pure cinematic feed.
+        // Draw image asynchronously to the screen whenever one is ready.
+        // This will display both live stream frames AND manual 'X' button snapshots.
         if (img_ready) {
-            if (show_camera_feed) {
-                lcd.draw_jpg_mem(img_buf, img_len, -40, 0);
-            }
+            lcd.draw_jpg_mem(img_buf, img_len, -40, 0);
             img_ready = false;
         }
 
         // A. RATE-LIMITED LCD UPDATE (HUD Mode)
         if (pdTICKS_TO_MS(now - last_lcd_update) >= 200) {
-            // Only draw HUD elements if the camera is NOT displaying over them
+            // Only draw HUD elements if the camera stream is NOT active
             if (has_car && !show_camera_feed) {
                 
                 // Draw Sonar Distance Text
@@ -293,7 +291,7 @@ extern "C" void app_main(void) {
         if (pdTICKS_TO_MS(now - last_tx_update) >= 50) {
             GamepadState state = gamepad.read();
             
-            // X Button (Request Single Photo)
+            // X Button (Request Single High-Quality Photo)
             if (state.x && !last_x_state) {
                 if (has_cam) esp_now_send(cam_mac, (const uint8_t*)"pyCAM_REQ", 9);
             }
