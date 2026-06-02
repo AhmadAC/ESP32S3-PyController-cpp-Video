@@ -204,29 +204,39 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
         return;
     }
 
-    // PyDrone Telemetry
-    if (data_len >= 2 && data[0] == 'T' && data[1] == ':') {
-        if (peer_type != PEER_DRONE) {
+    // PyDrone 18-Byte Binary Telemetry Packet
+    if (data_len == 18) {
+        if (!has_peer || peer_type != PEER_DRONE) {
             peer_type = PEER_DRONE;
+            memcpy((void*)peer_mac, esp_now_info->src_addr, 6);
             has_peer = true;
+            esp_now_peer_info_t peer_info = {};
+            peer_info.channel = 1;
+            peer_info.encrypt = false;
+            memcpy(peer_info.peer_addr, peer_mac, 6);
+            if (!esp_now_is_peer_exist(peer_mac)) esp_now_add_peer(&peer_info);
         }
-        char buf[64] = {0};
-        memcpy(buf, data, data_len < 63 ? data_len : 63);
 
-        char *r_ptr = strstr(buf, "R:");
-        if (r_ptr) sscanf(r_ptr, "R:%f", &drone_rol);
+        int16_t state_buf[9];
+        for (int i = 0; i < 9; i++) {
+            uint16_t val_offset = ((uint16_t)data[i * 2] << 8) | data[i * 2 + 1];
+            state_buf[i] = (int16_t)(val_offset - 32768);
+        }
 
-        char *p_ptr = strstr(buf, "P:");
-        if (p_ptr) sscanf(p_ptr, "P:%f", &drone_pit);
+        // Decode attitude telemetry values
+        drone_rol = (float)state_buf[0] / 100.0f;
+        drone_pit = (float)state_buf[1] / 100.0f;
+        drone_yaw = (float)state_buf[2] / 100.0f;
 
-        char *y_ptr = strstr(buf, "Y:");
-        if (y_ptr) sscanf(y_ptr, "Y:%f", &drone_yaw);
+        // Decode controller visual echoes
+        ctrl_rol = state_buf[3] / 10;
+        ctrl_pit = state_buf[4] / 10;
+        ctrl_yaw = state_buf[5] / 200;
+        ctrl_thr = state_buf[6] * 2 - 100;
 
-        char *a_ptr = strstr(buf, "A:");
-        if (a_ptr) sscanf(a_ptr, "A:%f", &drone_alt);
-
-        char *b_ptr = strstr(buf, "B:");
-        if (b_ptr) sscanf(b_ptr, "B:%f", &drone_bat);
+        // Decode altitude (meters) & battery voltage (V)
+        drone_alt = (float)state_buf[8] / 100.0f;
+        drone_bat = (float)state_buf[7] / 100.0f;
         return;
     }
 }
@@ -339,7 +349,7 @@ extern "C" void app_main(void) {
             img_ready = false;
         }
 
-        // Handle delayed or late peer type identification for background image syncing
+        // Handle delayed peer type identification background image switches
         if (has_peer && last_drawn_peer != peer_type && !show_camera_feed && !drone_data_page) {
             if (peer_type == PEER_DRONE) {
                 lcd.draw_jpg("/pyDrone.jpg", 0, 0);
@@ -374,11 +384,11 @@ extern "C" void app_main(void) {
                         last_sync_state = sync_state;
                     }
                 } else if (peer_type == PEER_DRONE) {
-                    // PyDrone Data Page Layout (Matches user-provided layout requirements)
+                    // PyDrone Data Page Layout (Unpacked fields printed to match the user picture)
                     if (drone_data_page) {
                         char buf[32];
                         
-                        // Drone Attitude
+                        // Quadcopter real-time attitude data
                         snprintf(buf, sizeof(buf), "ROL: %-6.2f", drone_rol);
                         lcd.draw_string(15, 20, buf, COLOR_BLACK, COLOR_WHITE, 2);
                         snprintf(buf, sizeof(buf), "PIT: %-6.2f", drone_pit);
@@ -386,7 +396,7 @@ extern "C" void app_main(void) {
                         snprintf(buf, sizeof(buf), "YAW: %-6.2f", drone_yaw);
                         lcd.draw_string(15, 70, buf, COLOR_BLACK, COLOR_WHITE, 2);
                         
-                        // Controller Data
+                        // Remote control data visual loopback
                         snprintf(buf, sizeof(buf), "ROL: %-4d", ctrl_rol);
                         lcd.draw_string(15, 110, buf, COLOR_BLUE, COLOR_WHITE, 2);
                         snprintf(buf, sizeof(buf), "PIT: %-4d", ctrl_pit);
@@ -397,11 +407,17 @@ extern "C" void app_main(void) {
                         snprintf(buf, sizeof(buf), "THR: %-4d", ctrl_thr);
                         lcd.draw_string(120, 135, buf, COLOR_BLUE, COLOR_WHITE, 2);
                         
-                        // Altitude & Battery
+                        // Relative Altitude & Battery values
                         snprintf(buf, sizeof(buf), "ALT: %-5.2f M", drone_alt);
                         lcd.draw_string(15, 175, buf, COLOR_DARK_GREEN, COLOR_WHITE, 2);
-                        snprintf(buf, sizeof(buf), "BAT: %-5.2f V", drone_bat);
-                        lcd.draw_string(15, 200, buf, COLOR_DARK_GREEN, COLOR_WHITE, 2);
+                        
+                        if (drone_bat > 3.1f) {
+                            snprintf(buf, sizeof(buf), "BAT: %-5.2f V", drone_bat);
+                            lcd.draw_string(15, 200, buf, COLOR_DARK_GREEN, COLOR_WHITE, 2);
+                        } else {
+                            snprintf(buf, sizeof(buf), "BAT: %-5.2f V (LOW)", drone_bat);
+                            lcd.draw_string(15, 200, buf, COLOR_RED, COLOR_WHITE, 2);
+                        }
                     }
                 }
             } 
@@ -417,7 +433,7 @@ extern "C" void app_main(void) {
             uint8_t rx_raw = (state.right_x / 14) > 255 ? 255 : (state.right_x / 14);
             uint8_t ry_raw = (state.right_y / 14) > 255 ? 255 : (state.right_y / 14);
             
-            // Map values for the Drone UI Display (-100 to 100 ranges)
+            // Map raw values for local echoes
             ctrl_rol = parse_axis(lx_raw);
             ctrl_pit = parse_axis(ly_raw);
             ctrl_yaw = parse_axis(rx_raw);
@@ -438,7 +454,7 @@ extern "C" void app_main(void) {
                     } else {
                         esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_0", 11);
                         
-                        // When exiting camera, instantly restore Backdrop
+                        // Restore appropriate visual layer when exiting stream
                         if (peer_type == PEER_DRONE) {
                             if (drone_data_page) {
                                 lcd.fill_screen(COLOR_WHITE);
@@ -479,7 +495,7 @@ extern "C" void app_main(void) {
                         }
                     }
                 } else if (peer_type == PEER_DRONE) {
-                    // Toggle Drone UI page state
+                    // Toggle Data page display state
                     drone_data_page = !drone_data_page;
                     if (!show_camera_feed) {
                         if (drone_data_page) {
