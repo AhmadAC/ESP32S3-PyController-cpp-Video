@@ -264,6 +264,7 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));
     ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, my_mac));
 
+    // Enable Promiscuous Sniffer for PyCam Video Feed
     wifi_promiscuous_filter_t filter = {};
     filter.filter_mask = WIFI_PROMIS_FILTER_MASK_DATA | WIFI_PROMIS_FILTER_MASK_MGMT;
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous_filter(&filter));
@@ -283,6 +284,7 @@ extern "C" void app_main(void) {
     lcd.draw_string(10, 100, "Searching for", COLOR_BLACK, COLOR_WHITE, 2);
     lcd.draw_string(10, 130, "pyDrone/pyCam...", COLOR_BLACK, COLOR_WHITE, 2);
 
+    // Initial search: Move past screen as soon as EITHER Drone or Cam is found
     while (!has_peer && !has_cam) {
         esp_now_send(broadcast_mac, (const uint8_t*)"pyDRONE_DISCOVER", 16);
         vTaskDelay(pdMS_TO_TICKS(50));
@@ -316,6 +318,7 @@ extern "C" void app_main(void) {
     while (true) {
         TickType_t now = xTaskGetTickCount();
 
+        // Late Discovery Routine (Runs in background if missing pyCam or pyDrone)
         if (!has_peer || !has_cam) {
             if (pdTICKS_TO_MS(now - last_discover) >= 3000) {
                 if (!has_peer) {
@@ -326,7 +329,7 @@ extern "C" void app_main(void) {
             }
         }
 
-        // Draw image asynchronously
+        // Draw image asynchronously (Guarded by show_camera_feed which requires has_cam)
         if (img_ready) {
             if (show_camera_feed) {
                 lcd.draw_jpg_mem(img_buf, img_len, -40, 0);
@@ -420,12 +423,14 @@ extern "C" void app_main(void) {
             ctrl_pit = parse_axis(ly_raw);
             ctrl_yaw = parse_axis(rx_raw);
             ctrl_thr = parse_axis(ry_raw);
-            
+
+            // X Button (Request Single Photo) - Disabled seamlessly if PyCam isn't connected
             if (state.x && !last_x_state) {
                 if (has_cam) esp_now_send(cam_mac, (const uint8_t*)"pyCAM_REQ", 9);
             }
             last_x_state = state.x;
 
+            // START Button (Toggle Camera Live Stream to LCD) - Disabled seamlessly if PyCam isn't connected
             if (state.start && !last_start_state) {
                 if (has_cam) {
                     show_camera_feed = !show_camera_feed;
@@ -434,6 +439,7 @@ extern "C" void app_main(void) {
                     } else {
                         esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_0", 11);
                         
+                        // Restore appropriate visual layer when exiting stream
                         if (peer_type == PEER_DRONE) {
                             if (drone_data_page) {
                                 lcd.fill_screen(COLOR_WHITE);
@@ -453,11 +459,11 @@ extern "C" void app_main(void) {
             }
             last_start_state = state.start;
 
+            // BACK Button (Toggle Car Sonar OR Drone Data Page)
             if (state.back && !last_back_state) {
                 if (peer_type == PEER_CAR) {
                     sonar_active = !sonar_active;
                     if (sonar_active) {
-                        // We can broadcast this safely as well
                         esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_SONAR_1", 13);
                         strcpy(last_dist_str_on_screen, "");
                     } else {
@@ -501,7 +507,7 @@ extern "C" void app_main(void) {
 
             uint8_t payload[6] = {67, lx_raw, ly_raw, rx_raw, ry_raw, btns};
             
-            // FIX: Using broadcast bypasses Unicast ACKs from being dropped while sniffer is running!
+            // Send gamepad state to drone using Broadcast MAC to prevent ACK drops while sniffing video
             if (has_peer) {
                 esp_now_send(broadcast_mac, payload, sizeof(payload));
             }
