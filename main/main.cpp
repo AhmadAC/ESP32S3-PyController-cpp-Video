@@ -1,3 +1,4 @@
+// ESP32S3-PyController-cpp-Video\main\main.cpp
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -17,10 +18,10 @@
 static const char *TAG = "pyController";
 
 // --- Global State Variables ---
-static volatile bool has_car = false;
+static volatile bool has_peer = false; // Works for both pyCar and pyDrone
 static volatile bool has_cam = false;
 
-static uint8_t peer_mac[6] = {0}; // Car MAC
+static uint8_t peer_mac[6] = {0}; // Car/Drone MAC
 static uint8_t cam_mac[6]  = {0}; // Cam MAC
 static uint8_t my_mac[6]   = {0}; // PyController MAC
 static const uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -104,9 +105,9 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
     if (data == NULL || data_len <= 0) return;
 
     if (data_len == 9 && memcmp(data, "pyCAR_ACK", 9) == 0) {
-        if (!has_car) {
+        if (!has_peer) {
             memcpy((void*)peer_mac, esp_now_info->src_addr, 6);
-            has_car = true;
+            has_peer = true;
             esp_now_peer_info_t peer_info = {};
             peer_info.channel = 1;
             peer_info.encrypt = false;
@@ -116,6 +117,19 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
         return;
     }
     
+    if (data_len == 11 && memcmp(data, "pyDRONE_ACK", 11) == 0) {
+        if (!has_peer) {
+            memcpy((void*)peer_mac, esp_now_info->src_addr, 6);
+            has_peer = true;
+            esp_now_peer_info_t peer_info = {};
+            peer_info.channel = 1;
+            peer_info.encrypt = false;
+            memcpy(peer_info.peer_addr, peer_mac, 6);
+            if (!esp_now_is_peer_exist(peer_mac)) esp_now_add_peer(&peer_info);
+        }
+        return;
+    }
+
     if (data_len == 9 && memcmp(data, "pyCAM_ACK", 9) == 0) {
         if (!has_cam) {
             memcpy((void*)cam_mac, esp_now_info->src_addr, 6);
@@ -130,7 +144,7 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
     }
 
     if (data_len >= 2 && data[0] == 'D' && data[1] == ':') {
-        has_car = true;
+        has_peer = true;
         char buf[64] = {0};
         memcpy(buf, data, data_len < 63 ? data_len : 63);
 
@@ -211,11 +225,13 @@ extern "C" void app_main(void) {
 
     lcd.fill_screen(COLOR_WHITE);
     lcd.draw_string(10, 100, "Searching for", COLOR_BLACK, COLOR_WHITE, 2);
-    lcd.draw_string(10, 130, "pyCar/pyCam...", COLOR_BLACK, COLOR_WHITE, 2);
+    lcd.draw_string(10, 130, "pyDrone/pyCam...", COLOR_BLACK, COLOR_WHITE, 2);
 
-    while (!has_car && !has_cam) {
+    while (!has_peer && !has_cam) {
+        esp_now_send(broadcast_mac, (const uint8_t*)"pyDRONE_DISCOVER", 16);
+        vTaskDelay(pdMS_TO_TICKS(50));
         esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 
     lcd.fill_screen(COLOR_WHITE);
@@ -238,24 +254,28 @@ extern "C" void app_main(void) {
     while (true) {
         TickType_t now = xTaskGetTickCount();
 
-        if (!has_car || !has_cam) {
+        if (!has_peer || !has_cam) {
             if (pdTICKS_TO_MS(now - last_discover) >= 3000) {
-                esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
+                if (!has_peer) {
+                    esp_now_send(broadcast_mac, (const uint8_t*)"pyDRONE_DISCOVER", 16);
+                    esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
+                }
                 last_discover = now;
             }
         }
 
-        // Draw image asynchronously to the screen whenever one is ready.
-        // This will display both live stream frames AND manual 'X' button snapshots.
+        // Draw image asynchronously. Completely skips UI overlays for a pure cinematic feed.
         if (img_ready) {
-            lcd.draw_jpg_mem(img_buf, img_len, -40, 0);
+            if (show_camera_feed) {
+                lcd.draw_jpg_mem(img_buf, img_len, -40, 0);
+            }
             img_ready = false;
         }
 
         // A. RATE-LIMITED LCD UPDATE (HUD Mode)
         if (pdTICKS_TO_MS(now - last_lcd_update) >= 200) {
-            // Only draw HUD elements if the camera stream is NOT active
-            if (has_car && !show_camera_feed) {
+            // Only draw HUD elements if the camera is NOT displaying over them
+            if (has_peer && !show_camera_feed) {
                 
                 // Draw Sonar Distance Text
                 if (sonar_active) {
@@ -291,7 +311,7 @@ extern "C" void app_main(void) {
         if (pdTICKS_TO_MS(now - last_tx_update) >= 50) {
             GamepadState state = gamepad.read();
             
-            // X Button (Request Single High-Quality Photo)
+            // X Button (Request Single Photo)
             if (state.x && !last_x_state) {
                 if (has_cam) esp_now_send(cam_mac, (const uint8_t*)"pyCAM_REQ", 9);
             }
@@ -324,10 +344,10 @@ extern "C" void app_main(void) {
             if (state.back && !last_back_state) {
                 sonar_active = !sonar_active;
                 if (sonar_active) {
-                    if (has_car) esp_now_send(peer_mac, (const uint8_t*)"pyCAR_SONAR_1", 13);
+                    if (has_peer) esp_now_send(peer_mac, (const uint8_t*)"pyCAR_SONAR_1", 13);
                     strcpy(last_dist_str_on_screen, ""); // Force text to reappear
                 } else {
-                    if (has_car) esp_now_send(peer_mac, (const uint8_t*)"pyCAR_SONAR_0", 13);
+                    if (has_peer) esp_now_send(peer_mac, (const uint8_t*)"pyCAR_SONAR_0", 13);
                     
                     // Seamlessly erase the text by redrawing the backdrop if not in video mode
                     if (!show_camera_feed) {
@@ -366,7 +386,7 @@ extern "C" void app_main(void) {
 
             uint8_t payload[6] = {67, lx, ly, rx, ry, btns};
             
-            if (has_car) {
+            if (has_peer) {
                 esp_now_send(peer_mac, payload, sizeof(payload));
             }
 
