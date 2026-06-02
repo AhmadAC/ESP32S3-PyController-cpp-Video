@@ -22,6 +22,7 @@ static const char *TAG = "pyController";
 // --- Global State Variables ---
 enum PeerType { PEER_NONE, PEER_CAR, PEER_DRONE };
 static PeerType peer_type = PEER_NONE;
+static PeerType last_drawn_peer = PEER_NONE;
 
 static volatile bool has_peer = false;
 static volatile bool has_cam = false;
@@ -297,8 +298,10 @@ extern "C" void app_main(void) {
     lcd.fill_screen(COLOR_WHITE);
     if (peer_type == PEER_DRONE) {
         lcd.draw_jpg("/pyDrone.jpg", 0, 0);
+        last_drawn_peer = PEER_DRONE;
     } else {
-        lcd.draw_jpg("/Car.jpg", 0, 0); 
+        lcd.draw_jpg("/Car.jpg", 0, 0);
+        last_drawn_peer = PEER_CAR;
     }
 
     TickType_t last_lcd_update = xTaskGetTickCount();
@@ -336,6 +339,16 @@ extern "C" void app_main(void) {
             img_ready = false;
         }
 
+        // Handle delayed or late peer type identification for background image syncing
+        if (has_peer && last_drawn_peer != peer_type && !show_camera_feed && !drone_data_page) {
+            if (peer_type == PEER_DRONE) {
+                lcd.draw_jpg("/pyDrone.jpg", 0, 0);
+            } else if (peer_type == PEER_CAR) {
+                lcd.draw_jpg("/Car.jpg", 0, 0); 
+            }
+            last_drawn_peer = peer_type;
+        }
+
         // A. RATE-LIMITED LCD UPDATE (HUD Mode)
         if (pdTICKS_TO_MS(now - last_lcd_update) >= 200) {
             if (has_peer && !show_camera_feed) {
@@ -361,28 +374,34 @@ extern "C" void app_main(void) {
                         last_sync_state = sync_state;
                     }
                 } else if (peer_type == PEER_DRONE) {
-                    // PyDrone HUD Layout
+                    // PyDrone Data Page Layout (Matches user-provided layout requirements)
                     if (drone_data_page) {
                         char buf[32];
+                        
                         // Drone Attitude
                         snprintf(buf, sizeof(buf), "ROL: %-6.2f", drone_rol);
-                        lcd.draw_string(10, 15, buf, COLOR_BLACK, COLOR_WHITE, 2);
+                        lcd.draw_string(15, 20, buf, COLOR_BLACK, COLOR_WHITE, 2);
                         snprintf(buf, sizeof(buf), "PIT: %-6.2f", drone_pit);
-                        lcd.draw_string(10, 45, buf, COLOR_BLACK, COLOR_WHITE, 2);
+                        lcd.draw_string(15, 45, buf, COLOR_BLACK, COLOR_WHITE, 2);
                         snprintf(buf, sizeof(buf), "YAW: %-6.2f", drone_yaw);
-                        lcd.draw_string(10, 75, buf, COLOR_BLACK, COLOR_WHITE, 2);
+                        lcd.draw_string(15, 70, buf, COLOR_BLACK, COLOR_WHITE, 2);
                         
                         // Controller Data
-                        snprintf(buf, sizeof(buf), "R:%-4d  P:%-4d", ctrl_rol, ctrl_pit);
-                        lcd.draw_string(10, 115, buf, COLOR_BLUE, COLOR_WHITE, 2);
-                        snprintf(buf, sizeof(buf), "Y:%-4d  T:%-4d", ctrl_yaw, ctrl_thr);
-                        lcd.draw_string(10, 145, buf, COLOR_BLUE, COLOR_WHITE, 2);
+                        snprintf(buf, sizeof(buf), "ROL: %-4d", ctrl_rol);
+                        lcd.draw_string(15, 110, buf, COLOR_BLUE, COLOR_WHITE, 2);
+                        snprintf(buf, sizeof(buf), "PIT: %-4d", ctrl_pit);
+                        lcd.draw_string(120, 110, buf, COLOR_BLUE, COLOR_WHITE, 2);
+
+                        snprintf(buf, sizeof(buf), "YAW: %-4d", ctrl_yaw);
+                        lcd.draw_string(15, 135, buf, COLOR_BLUE, COLOR_WHITE, 2);
+                        snprintf(buf, sizeof(buf), "THR: %-4d", ctrl_thr);
+                        lcd.draw_string(120, 135, buf, COLOR_BLUE, COLOR_WHITE, 2);
                         
                         // Altitude & Battery
                         snprintf(buf, sizeof(buf), "ALT: %-5.2f M", drone_alt);
-                        lcd.draw_string(10, 185, COLOR_DARK_GREEN, COLOR_WHITE, 2);
+                        lcd.draw_string(15, 175, buf, COLOR_DARK_GREEN, COLOR_WHITE, 2);
                         snprintf(buf, sizeof(buf), "BAT: %-5.2f V", drone_bat);
-                        lcd.draw_string(10, 215, buf, COLOR_DARK_GREEN, COLOR_WHITE, 2);
+                        lcd.draw_string(15, 200, buf, COLOR_DARK_GREEN, COLOR_WHITE, 2);
                     }
                 }
             } 
@@ -398,7 +417,7 @@ extern "C" void app_main(void) {
             uint8_t rx_raw = (state.right_x / 14) > 255 ? 255 : (state.right_x / 14);
             uint8_t ry_raw = (state.right_y / 14) > 255 ? 255 : (state.right_y / 14);
             
-            // Map values for the Drone UI Display
+            // Map values for the Drone UI Display (-100 to 100 ranges)
             ctrl_rol = parse_axis(lx_raw);
             ctrl_pit = parse_axis(ly_raw);
             ctrl_yaw = parse_axis(rx_raw);
