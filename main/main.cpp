@@ -137,11 +137,6 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
             peer_type = PEER_CAR;
             memcpy((void*)peer_mac, esp_now_info->src_addr, 6);
             has_peer = true;
-            esp_now_peer_info_t peer_info = {};
-            peer_info.channel = 1;
-            peer_info.encrypt = false;
-            memcpy(peer_info.peer_addr, peer_mac, 6);
-            if (!esp_now_is_peer_exist(peer_mac)) esp_now_add_peer(&peer_info);
         }
         return;
     }
@@ -151,11 +146,6 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
             peer_type = PEER_DRONE;
             memcpy((void*)peer_mac, esp_now_info->src_addr, 6);
             has_peer = true;
-            esp_now_peer_info_t peer_info = {};
-            peer_info.channel = 1;
-            peer_info.encrypt = false;
-            memcpy(peer_info.peer_addr, peer_mac, 6);
-            if (!esp_now_is_peer_exist(peer_mac)) esp_now_add_peer(&peer_info);
         }
         return;
     }
@@ -210,11 +200,6 @@ void on_data_recv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
             peer_type = PEER_DRONE;
             memcpy((void*)peer_mac, esp_now_info->src_addr, 6);
             has_peer = true;
-            esp_now_peer_info_t peer_info = {};
-            peer_info.channel = 1;
-            peer_info.encrypt = false;
-            memcpy(peer_info.peer_addr, peer_mac, 6);
-            if (!esp_now_is_peer_exist(peer_mac)) esp_now_add_peer(&peer_info);
         }
 
         int16_t state_buf[9];
@@ -363,7 +348,6 @@ extern "C" void app_main(void) {
         if (pdTICKS_TO_MS(now - last_lcd_update) >= 200) {
             if (has_peer && !show_camera_feed) {
                 if (peer_type == PEER_CAR) {
-                    // PyCar HUD Layout
                     if (sonar_active) {
                         if (strcmp(distance_str, last_dist_str_on_screen) != 0) {
                             char padded_text[32];
@@ -384,7 +368,6 @@ extern "C" void app_main(void) {
                         last_sync_state = sync_state;
                     }
                 } else if (peer_type == PEER_DRONE) {
-                    // PyDrone Data Page Layout (Unpacked fields printed to match the user picture)
                     if (drone_data_page) {
                         char buf[32];
                         
@@ -412,10 +395,10 @@ extern "C" void app_main(void) {
                         lcd.draw_string(15, 175, buf, COLOR_DARK_GREEN, COLOR_WHITE, 2);
                         
                         if (drone_bat > 3.1f) {
-                            snprintf(buf, sizeof(buf), "BAT: %-5.2f V", drone_bat);
+                            snprintf(buf, sizeof(buf), "BAT: %-4.2f V", drone_bat);
                             lcd.draw_string(15, 200, buf, COLOR_DARK_GREEN, COLOR_WHITE, 2);
                         } else {
-                            snprintf(buf, sizeof(buf), "BAT: %-5.2f V (LOW)", drone_bat);
+                            snprintf(buf, sizeof(buf), "BAT: %-4.2f V LOW", drone_bat);
                             lcd.draw_string(15, 200, buf, COLOR_RED, COLOR_WHITE, 2);
                         }
                     }
@@ -433,19 +416,16 @@ extern "C" void app_main(void) {
             uint8_t rx_raw = (state.right_x / 14) > 255 ? 255 : (state.right_x / 14);
             uint8_t ry_raw = (state.right_y / 14) > 255 ? 255 : (state.right_y / 14);
             
-            // Map raw values for local echoes
             ctrl_rol = parse_axis(lx_raw);
             ctrl_pit = parse_axis(ly_raw);
             ctrl_yaw = parse_axis(rx_raw);
             ctrl_thr = parse_axis(ry_raw);
             
-            // X Button (Request Single Photo)
             if (state.x && !last_x_state) {
                 if (has_cam) esp_now_send(cam_mac, (const uint8_t*)"pyCAM_REQ", 9);
             }
             last_x_state = state.x;
 
-            // START Button (Toggle Camera Live Stream to LCD)
             if (state.start && !last_start_state) {
                 if (has_cam) {
                     show_camera_feed = !show_camera_feed;
@@ -454,7 +434,6 @@ extern "C" void app_main(void) {
                     } else {
                         esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_0", 11);
                         
-                        // Restore appropriate visual layer when exiting stream
                         if (peer_type == PEER_DRONE) {
                             if (drone_data_page) {
                                 lcd.fill_screen(COLOR_WHITE);
@@ -474,28 +453,25 @@ extern "C" void app_main(void) {
             }
             last_start_state = state.start;
 
-            // BACK Button (Toggle Car Sonar OR Drone Data Page)
             if (state.back && !last_back_state) {
                 if (peer_type == PEER_CAR) {
                     sonar_active = !sonar_active;
                     if (sonar_active) {
-                        if (has_peer) esp_now_send(peer_mac, (const uint8_t*)"pyCAR_SONAR_1", 13);
-                        strcpy(last_dist_str_on_screen, ""); // Force text to reappear
+                        // We can broadcast this safely as well
+                        esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_SONAR_1", 13);
+                        strcpy(last_dist_str_on_screen, "");
                     } else {
-                        if (has_peer) esp_now_send(peer_mac, (const uint8_t*)"pyCAR_SONAR_0", 13);
-                        
+                        esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_SONAR_0", 13);
                         if (!show_camera_feed) {
                             lcd.draw_jpg("/Car.jpg", 0, 0);
                             if (line_follower_state) fill_circle(lcd, 220, 20, 6, COLOR_BLACK);
                             if (sync_state) fill_circle(lcd, 195, 20, 6, COLOR_RED);
                             strcpy(last_dist_str_on_screen, "");
-                            
                             last_lf_state = line_follower_state;
                             last_sync_state = sync_state;
                         }
                     }
                 } else if (peer_type == PEER_DRONE) {
-                    // Toggle Data page display state
                     drone_data_page = !drone_data_page;
                     if (!show_camera_feed) {
                         if (drone_data_page) {
@@ -508,7 +484,6 @@ extern "C" void app_main(void) {
             }
             last_back_state = state.back;
 
-            // Hardware Stick Mapping & Output Transmission
             uint8_t btns = 8; 
             if (state.up && state.right)         btns = 1;
             else if (state.right && state.down)  btns = 3;
@@ -526,8 +501,9 @@ extern "C" void app_main(void) {
 
             uint8_t payload[6] = {67, lx_raw, ly_raw, rx_raw, ry_raw, btns};
             
+            // FIX: Using broadcast bypasses Unicast ACKs from being dropped while sniffer is running!
             if (has_peer) {
-                esp_now_send(peer_mac, payload, sizeof(payload));
+                esp_now_send(broadcast_mac, payload, sizeof(payload));
             }
 
             last_tx_update = now;
