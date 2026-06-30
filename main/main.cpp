@@ -362,6 +362,7 @@ extern "C" void app_main(void) {
     bool last_back_state = false;
     
     bool show_camera_feed = false;
+    bool snapshot_held = false; // NEW: Tracks if a frozen snapshot is active
     bool sonar_active = true;
 
     while (true) {
@@ -387,16 +388,17 @@ extern "C" void app_main(void) {
             last_fps_print = now;
         }
 
-        // Draw image asynchronously
+        // Draw image asynchronously (Guarded by show_camera_feed OR snapshot_held)
         if (img_ready) {
-            if (show_camera_feed) {
+            if (show_camera_feed || snapshot_held) {
                 lcd.draw_jpg_mem(img_buf, img_len, -40, 0);
-                frames_drawn++; 
+                if (show_camera_feed) frames_drawn++; 
             }
             img_ready = false;
         }
 
-        if (has_peer && last_drawn_peer != peer_type && !show_camera_feed && !drone_data_page) {
+        // Ensure background is correct if we aren't showing a camera feed AND we don't have a snapshot up
+        if (has_peer && last_drawn_peer != peer_type && !show_camera_feed && !snapshot_held && !drone_data_page) {
             if (peer_type == PEER_DRONE) {
                 lcd.draw_jpg("/pyDrone.jpg", 0, 0);
             } else if (peer_type == PEER_CAR) {
@@ -406,8 +408,9 @@ extern "C" void app_main(void) {
         }
 
         // A. RATE-LIMITED LCD UPDATE (HUD Mode)
+        // HUD is intentionally bypassed while stream or snapshot is running
         if (pdTICKS_TO_MS(now - last_lcd_update) >= 200) {
-            if (has_peer && !show_camera_feed) {
+            if (has_peer && !show_camera_feed && !snapshot_held) {
                 if (peer_type == PEER_CAR) {
                     if (sonar_active) {
                         if (strcmp(distance_str, last_dist_str_on_screen) != 0) {
@@ -479,21 +482,45 @@ extern "C" void app_main(void) {
             ctrl_yaw = parse_axis(rx_raw);
             ctrl_thr = parse_axis(ry_raw);
 
+            // X Button (Toggle Frozen Snapshot Mode)
             if (state.x && !last_x_state) {
-                if (has_cam) esp_now_send(cam_mac, (const uint8_t*)"pyCAM_REQ", 9);
-            }
-            last_x_state = state.x;
-
-            if (state.start && !last_start_state) {
                 if (has_cam) {
-                    show_camera_feed = !show_camera_feed;
-                    if (show_camera_feed) {
+                    snapshot_held = !snapshot_held;
+                    if (snapshot_held) {
+                        show_camera_feed = false; // Ignore live stream frames
+                        esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_0", 11); // Tell camera to pause live stream
+                        
+                        // Brief pause to allow the final low-quality stream frames to clear the airwaves
+                        vTaskDelay(pdMS_TO_TICKS(50));
+                        
+                        // Flush the assembly buffer completely to ensure the new frame lands perfectly cleanly
+                        img_total_chunks = 0; 
+                        img_chunks_received = 0;
+                        img_ready = false;
+                        
+                        // Request the single High-Quality Frame
+                        esp_now_send(cam_mac, (const uint8_t*)"pyCAM_REQ", 9);
+                    } else {
+                        // Return to smooth streaming mode
+                        show_camera_feed = true;
                         esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_1", 11);
                         frames_drawn = 0; 
                         last_fps_print = xTaskGetTickCount();
-                    } else {
+                    }
+                }
+            }
+            last_x_state = state.x;
+
+            // START Button (Toggle Camera completely ON/OFF)
+            if (state.start && !last_start_state) {
+                if (has_cam) {
+                    if (show_camera_feed || snapshot_held) {
+                        // Disable camera entirely
+                        show_camera_feed = false;
+                        snapshot_held = false;
                         esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_0", 11);
                         
+                        // Restore appropriate visual layer when exiting stream
                         if (peer_type == PEER_DRONE) {
                             if (drone_data_page) {
                                 lcd.fill_screen(COLOR_WHITE);
@@ -508,6 +535,13 @@ extern "C" void app_main(void) {
                             last_lf_state = line_follower_state;
                             last_sync_state = sync_state;
                         }
+                    } else {
+                        // Start live stream
+                        show_camera_feed = true;
+                        snapshot_held = false;
+                        esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_1", 11);
+                        frames_drawn = 0; 
+                        last_fps_print = xTaskGetTickCount();
                     }
                 }
             }
@@ -522,7 +556,7 @@ extern "C" void app_main(void) {
                     } else {
                         if (has_peer) esp_now_send(peer_mac, (const uint8_t*)"pyCAR_SONAR_0", 13);
                         
-                        if (!show_camera_feed) {
+                        if (!show_camera_feed && !snapshot_held) {
                             lcd.draw_jpg("/Car.jpg", 0, 0);
                             if (line_follower_state) fill_circle(lcd, 220, 20, 6, COLOR_BLACK);
                             if (sync_state) fill_circle(lcd, 195, 20, 6, COLOR_RED);
@@ -533,7 +567,7 @@ extern "C" void app_main(void) {
                     }
                 } else if (peer_type == PEER_DRONE) {
                     drone_data_page = !drone_data_page;
-                    if (!show_camera_feed) {
+                    if (!show_camera_feed && !snapshot_held) {
                         if (drone_data_page) {
                             lcd.fill_screen(COLOR_WHITE);
                         } else {
@@ -568,6 +602,6 @@ extern "C" void app_main(void) {
             last_tx_update = now;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(10)); 
+        vTaskDelay(pdMS_TO_TICKS(1)); 
     }
 }
