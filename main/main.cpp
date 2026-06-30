@@ -371,13 +371,14 @@ extern "C" void app_main(void) {
     while (true) {
         TickType_t now = xTaskGetTickCount();
 
-        // REVERTED FIX: Only broadcast discovery if we DO NOT have a peer.
-        // Broadcasting every 3 seconds while driving the pyCar spams the airwaves 
-        // with handshakes and causes packet drops!
-        if (!has_peer) {
+        // FIX: Only broadcast if we don't have a peer. This prevents spamming 
+        // the pyCar when connected and causing control packets to drop.
+        if (!has_peer || !has_cam) {
             if (pdTICKS_TO_MS(now - last_discover) >= 3000) {
-                esp_now_send(broadcast_mac, (const uint8_t*)"pyDRONE_DISCOVER", 16);
-                esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
+                if (!has_peer) {
+                    esp_now_send(broadcast_mac, (const uint8_t*)"pyDRONE_DISCOVER", 16);
+                    esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
+                }
                 last_discover = now;
             }
         }
@@ -597,6 +598,7 @@ extern "C" void app_main(void) {
             if (state.b) btns |= (1 << 5);
             if (state.y) btns |= (1 << 4);
 
+            // FIX: Restored to 10 bytes exactly as the PyCar expects to receive it.
             uint8_t payload[10] = {
                 67, 
                 lx_raw, 
