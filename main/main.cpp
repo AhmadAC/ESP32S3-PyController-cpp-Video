@@ -118,15 +118,15 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
         last_chunk_time = now;
         
         if (chunk_idx == 0) {
-            if (total_chunks > 100) return; 
+            if (total_chunks > 100 || len > 1400) return; 
             
             img_chunks_received = 0;
             img_total_chunks = total_chunks;
             img_len = 0;
         }
 
-        // Only accept sequential chunks to absolutely guarantee structural integrity
-        if (chunk_idx == img_chunks_received && total_chunks == img_total_chunks) {
+        // Only accept sequential chunks to absolutely guarantee structural integrity of the JPEG
+        if (img_total_chunks > 0 && chunk_idx == img_chunks_received && total_chunks == img_total_chunks) {
             if (img_len + len <= MAX_JPG_SIZE) {
                 memcpy(img_buf + img_len, custom + 9, len);
                 img_len += len;
@@ -151,13 +151,16 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
                         img_ready = true;
                     } else {
                         img_total_chunks = 0; // Invalidate broken frame
+                        img_chunks_received = 0;
                     }
                 }
             } else {
                 img_total_chunks = 0; // Invalidate on overflow
+                img_chunks_received = 0;
             }
         } else {
             img_total_chunks = 0; // Invalidate on dropped packet desync
+            img_chunks_received = 0;
         }
     }
 }
@@ -362,7 +365,7 @@ extern "C" void app_main(void) {
     bool last_back_state = false;
     
     bool show_camera_feed = false;
-    bool snapshot_held = false; // NEW: Tracks if a frozen snapshot is active
+    bool snapshot_held = false;
     bool sonar_active = true;
 
     while (true) {
@@ -602,6 +605,8 @@ extern "C" void app_main(void) {
             last_tx_update = now;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1)); 
+        // FIX: Minimum 10ms yield guarantees the FreeRTOS background idle task gets 
+        // CPU time so the hardware Watchdog doesn't reset the system!
+        vTaskDelay(pdMS_TO_TICKS(10)); 
     }
 }
