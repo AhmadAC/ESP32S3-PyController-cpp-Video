@@ -105,9 +105,10 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
         memcpy(&total_chunks, custom + 5, 2);
         memcpy(&len, custom + 7, 2);
         
+        // Safety bounds check to prevent corrupt Wi-Fi packets from crashing the system
+        if (len > 1400 || total_chunks == 0 || total_chunks > 100) return;
+        
         if (chunk_idx == 0) {
-            if (total_chunks > 100) return; 
-            
             img_chunks_received = 0;
             img_total_chunks = total_chunks;
             img_len = 0;
@@ -123,7 +124,11 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
                 if (img_chunks_received == img_total_chunks) {
                     img_ready = true;
                 }
+            } else {
+                img_total_chunks = 0; // Invalidate frame on overflow
             }
+        } else {
+            img_total_chunks = 0; // Invalidate frame on dropped chunk (preserves decoder health)
         }
     }
 }
@@ -315,8 +320,9 @@ extern "C" void app_main(void) {
     TickType_t last_lcd_update = xTaskGetTickCount();
     TickType_t last_tx_update = xTaskGetTickCount();
     TickType_t last_discover = xTaskGetTickCount();
-    TickType_t last_fps_print = xTaskGetTickCount();
     
+    // FPS Tracker Variables
+    TickType_t last_fps_print = xTaskGetTickCount();
     uint32_t frames_drawn = 0;
 
     char last_dist_str_on_screen[32] = "";
@@ -342,7 +348,7 @@ extern "C" void app_main(void) {
             }
         }
 
-        // FPS REPL Tracker
+        // Output FPS Tracker to REPL directly every 60 seconds
         if (pdTICKS_TO_MS(now - last_fps_print) >= 60000) {
             if (show_camera_feed && has_cam) {
                 float fps = (float)frames_drawn / 60.0f;
@@ -352,7 +358,7 @@ extern "C" void app_main(void) {
             last_fps_print = now;
         }
 
-        // Draw image asynchronously (Guarded by show_camera_feed which requires has_cam)
+        // Draw image asynchronously
         if (img_ready) {
             if (show_camera_feed) {
                 lcd.draw_jpg_mem(img_buf, img_len, -40, 0);
@@ -526,8 +532,6 @@ extern "C" void app_main(void) {
 
             uint8_t payload[6] = {67, lx_raw, ly_raw, rx_raw, ry_raw, btns};
             
-            // Unicast (peer_mac) avoids the Wi-Fi protocol forcing a 1 Mbps broadcast rate, 
-            // saving precious channel airtime for the camera stream frames.
             if (has_peer) {
                 esp_now_send(peer_mac, payload, sizeof(payload));
             }
@@ -535,6 +539,8 @@ extern "C" void app_main(void) {
             last_tx_update = now;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(10)); 
+        // Reduced from 10ms to 1ms. This removes the artificial software bottleneck
+        // so the main loop spins fast enough to catch and render every frame instantly!
+        vTaskDelay(pdMS_TO_TICKS(1)); 
     }
 }
