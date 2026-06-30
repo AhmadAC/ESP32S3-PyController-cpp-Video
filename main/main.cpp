@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_spiffs.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h" 
 
 #include "lcd.h"
 #include "gamepad.hpp"
@@ -105,16 +106,26 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
         memcpy(&total_chunks, custom + 5, 2);
         memcpy(&len, custom + 7, 2);
         
-        // Safety bounds check to prevent corrupt Wi-Fi packets from crashing the system
-        if (len > 1400 || total_chunks == 0 || total_chunks > 100) return;
+        static int64_t last_chunk_time = 0;
+        int64_t now = esp_timer_get_time();
+        
+        // Timeout check: If more than 100ms has passed since the last chunk, we missed packets.
+        // This drops the fragmented buffer so we don't accidentally merge chunks from two different frames.
+        if (img_chunks_received > 0 && (now - last_chunk_time) > 100000) {
+            img_total_chunks = 0; 
+            img_chunks_received = 0;
+        }
+        last_chunk_time = now;
         
         if (chunk_idx == 0) {
+            if (total_chunks > 100) return; 
+            
             img_chunks_received = 0;
             img_total_chunks = total_chunks;
             img_len = 0;
         }
 
-        // Only accept sequential chunks to absolutely guarantee structural integrity of the JPEG
+        // Only accept sequential chunks to absolutely guarantee structural integrity
         if (chunk_idx == img_chunks_received && total_chunks == img_total_chunks) {
             if (img_len + len <= MAX_JPG_SIZE) {
                 memcpy(img_buf + img_len, custom + 9, len);
@@ -122,13 +133,31 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
                 img_chunks_received++;
                 
                 if (img_chunks_received == img_total_chunks) {
-                    img_ready = true;
+                    
+                    // STRUCTURAL INTEGRITY CHECK: 
+                    // Ensures the frame starts with FF D8 (SOI) and ends with FF D9 (EOI).
+                    // This prevents corrupted frames from crashing the JPEG decoder in an infinite loop!
+                    bool valid_jpeg = false;
+                    if (img_len > 10 && img_buf[0] == 0xFF && img_buf[1] == 0xD8) {
+                        for (int i = 1; i <= 16; i++) {
+                            if (img_buf[img_len - i - 1] == 0xFF && img_buf[img_len - i] == 0xD9) {
+                                valid_jpeg = true;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (valid_jpeg) {
+                        img_ready = true;
+                    } else {
+                        img_total_chunks = 0; // Invalidate broken frame
+                    }
                 }
             } else {
-                img_total_chunks = 0; // Invalidate frame on overflow
+                img_total_chunks = 0; // Invalidate on overflow
             }
         } else {
-            img_total_chunks = 0; // Invalidate frame on dropped chunk (preserves decoder health)
+            img_total_chunks = 0; // Invalidate on dropped packet desync
         }
     }
 }
@@ -348,7 +377,7 @@ extern "C" void app_main(void) {
             }
         }
 
-        // Output FPS Tracker to REPL directly every 60 seconds
+        // FPS REPL Tracker
         if (pdTICKS_TO_MS(now - last_fps_print) >= 60000) {
             if (show_camera_feed && has_cam) {
                 float fps = (float)frames_drawn / 60.0f;
@@ -539,8 +568,6 @@ extern "C" void app_main(void) {
             last_tx_update = now;
         }
 
-        // Reduced from 10ms to 1ms. This removes the artificial software bottleneck
-        // so the main loop spins fast enough to catch and render every frame instantly!
-        vTaskDelay(pdMS_TO_TICKS(1)); 
+        vTaskDelay(pdMS_TO_TICKS(10)); 
     }
 }
