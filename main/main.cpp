@@ -16,6 +16,7 @@
 #include "gamepad.hpp"
 
 #define COLOR_DARK_GREEN 0x03E0
+#define MAX_JPG_SIZE (60 * 1024) // 60KB Static Buffer for max framerate and 0 fragmentation
 
 static const char *TAG = "pyController";
 
@@ -94,7 +95,7 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
 
     uint8_t *custom = payload + 24;
     if (custom[0] == 'C' && custom[1] == 'A' && custom[2] == 'M') {
-        if (img_ready) return; 
+        if (img_ready) return; // Drop frame gracefully if decoder is still busy drawing
 
         uint16_t chunk_idx, total_chunks, len;
         memcpy(&chunk_idx, custom + 3, 2);
@@ -104,18 +105,15 @@ void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
         if (chunk_idx == 0) {
             if (total_chunks > 100) return; 
             
-            if (img_buf) {
-                heap_caps_free(img_buf);
-                img_buf = nullptr;
-            }
-            img_buf = (uint8_t*)heap_caps_malloc(total_chunks * 1400, MALLOC_CAP_8BIT);
+            // CRITICAL FIX: Memory is no longer constantly malloc'd and freed here.
+            // Using the single pre-allocated 60KB buffer eliminates fragmentation and freezes.
             img_chunks_received = 0;
             img_total_chunks = total_chunks;
             img_len = 0;
         }
 
         if (img_buf && chunk_idx == img_chunks_received && total_chunks == img_total_chunks) {
-            if (img_len + len <= total_chunks * 1400) {
+            if (img_len + len <= MAX_JPG_SIZE) {
                 memcpy(img_buf + img_len, custom + 9, len);
                 img_len += len;
                 img_chunks_received++;
@@ -235,6 +233,12 @@ extern "C" void app_main(void) {
     }
     ESP_ERROR_CHECK(ret);
 
+    // Pre-allocate the static memory buffer for video streaming exactly once!
+    img_buf = (uint8_t*)heap_caps_malloc(MAX_JPG_SIZE, MALLOC_CAP_8BIT);
+    if (!img_buf) {
+        ESP_LOGE(TAG, "FATAL: Failed to allocate JPEG stream buffer!");
+    }
+
     LCD lcd;
     lcd.init();
     lcd.fill_screen(COLOR_WHITE);
@@ -338,7 +342,7 @@ extern "C" void app_main(void) {
             if (show_camera_feed && has_cam) {
                 float fps = (float)frames_drawn / 60.0f;
                 printf(">>> PyCam Stream Performance: %.2f FPS <<<\n", fps);
-                ESP_LOGI(TAG, "Video Stream FPS: %.2f (Total Frames: %lu)", fps, frames_drawn);
+                ESP_LOGI(TAG, "Video Stream FPS: %.2f (Total Frames: %lu)", fps, (unsigned long)frames_drawn);
             }
             frames_drawn = 0;
             last_fps_print = now;
@@ -347,8 +351,10 @@ extern "C" void app_main(void) {
         // Draw image asynchronously (Guarded by show_camera_feed which requires has_cam)
         if (img_ready) {
             if (show_camera_feed) {
+                // Notice that draw_jpg_mem gracefully ignores errors (like code 6)
+                // and we instantly prepare for the next frame without stalling.
                 lcd.draw_jpg_mem(img_buf, img_len, -40, 0);
-                frames_drawn++; // Increment frames successfully pushed to the screen
+                frames_drawn++; 
             }
             img_ready = false;
         }
@@ -482,11 +488,10 @@ extern "C" void app_main(void) {
                 if (peer_type == PEER_CAR) {
                     sonar_active = !sonar_active;
                     if (sonar_active) {
-                        // CRITICAL PHY FIX: Unicast command to specific peer keeps PHY transmission rate high
+                        // Unicast command keeps Wi-Fi airtime fast and prevents channel saturation
                         if (has_peer) esp_now_send(peer_mac, (const uint8_t*)"pyCAR_SONAR_1", 13);
                         strcpy(last_dist_str_on_screen, ""); // Force text to reappear
                     } else {
-                        // CRITICAL PHY FIX: Unicast command to specific peer keeps PHY transmission rate high
                         if (has_peer) esp_now_send(peer_mac, (const uint8_t*)"pyCAR_SONAR_0", 13);
                         
                         if (!show_camera_feed) {
