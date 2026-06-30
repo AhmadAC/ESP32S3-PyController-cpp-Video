@@ -371,8 +371,10 @@ extern "C" void app_main(void) {
     while (true) {
         TickType_t now = xTaskGetTickCount();
 
-        // FIX: Removed if (!has_peer) condition. Ensure both peers are continually searched for if either is disconnected
-        if (!has_peer || !has_cam) {
+        // REVERTED FIX: Only broadcast discovery if we DO NOT have a peer.
+        // Broadcasting every 3 seconds while driving the pyCar spams the airwaves 
+        // with handshakes and causes packet drops!
+        if (!has_peer) {
             if (pdTICKS_TO_MS(now - last_discover) >= 3000) {
                 esp_now_send(broadcast_mac, (const uint8_t*)"pyDRONE_DISCOVER", 16);
                 esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
@@ -595,7 +597,6 @@ extern "C" void app_main(void) {
             if (state.b) btns |= (1 << 5);
             if (state.y) btns |= (1 << 4);
 
-            // FIX: Formatted to 10 bytes to perfectly match the pyCar decoding payload structure. 
             uint8_t payload[10] = {
                 67, 
                 lx_raw, 
@@ -616,7 +617,7 @@ extern "C" void app_main(void) {
             last_tx_update = now;
         }
 
-        // FIX: Minimum 10ms yield guarantees the FreeRTOS background idle task gets 
+        // Minimum 10ms yield guarantees the FreeRTOS background idle task gets 
         // CPU time so the hardware Watchdog doesn't reset the system!
         vTaskDelay(pdMS_TO_TICKS(10)); 
     }
