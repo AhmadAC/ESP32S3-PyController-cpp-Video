@@ -304,6 +304,10 @@ extern "C" void app_main(void) {
     TickType_t last_lcd_update = xTaskGetTickCount();
     TickType_t last_tx_update = xTaskGetTickCount();
     TickType_t last_discover = xTaskGetTickCount();
+    
+    // Framerate Tracking Variables
+    TickType_t last_fps_print = xTaskGetTickCount();
+    uint32_t frames_drawn = 0;
 
     char last_dist_str_on_screen[32] = "";
     bool last_lf_state = false;
@@ -329,10 +333,22 @@ extern "C" void app_main(void) {
             }
         }
 
+        // Output FPS Tracker to REPL directly every 60 seconds (only if stream is active)
+        if (pdTICKS_TO_MS(now - last_fps_print) >= 60000) {
+            if (show_camera_feed && has_cam) {
+                float fps = (float)frames_drawn / 60.0f;
+                printf(">>> PyCam Stream Performance: %.2f FPS <<<\n", fps);
+                ESP_LOGI(TAG, "Video Stream FPS: %.2f (Total Frames: %lu)", fps, frames_drawn);
+            }
+            frames_drawn = 0;
+            last_fps_print = now;
+        }
+
         // Draw image asynchronously (Guarded by show_camera_feed which requires has_cam)
         if (img_ready) {
             if (show_camera_feed) {
                 lcd.draw_jpg_mem(img_buf, img_len, -40, 0);
+                frames_drawn++; // Increment frames successfully pushed to the screen
             }
             img_ready = false;
         }
@@ -398,10 +414,10 @@ extern "C" void app_main(void) {
                         lcd.draw_string(15, 175, buf, COLOR_DARK_GREEN, COLOR_WHITE, 2);
                         
                         if (drone_bat > 3.1f) {
-                            snprintf(buf, sizeof(buf), "BAT: %-4.2f V", drone_bat);
+                            snprintf(buf, sizeof(buf), "BAT: %-5.2f V", drone_bat);
                             lcd.draw_string(15, 200, buf, COLOR_DARK_GREEN, COLOR_WHITE, 2);
                         } else {
-                            snprintf(buf, sizeof(buf), "BAT: %-4.2f V LOW", drone_bat);
+                            snprintf(buf, sizeof(buf), "BAT: %-5.2f V (LOW)", drone_bat);
                             lcd.draw_string(15, 200, buf, COLOR_RED, COLOR_WHITE, 2);
                         }
                     }
@@ -436,6 +452,8 @@ extern "C" void app_main(void) {
                     show_camera_feed = !show_camera_feed;
                     if (show_camera_feed) {
                         esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_1", 11);
+                        frames_drawn = 0; // Reset frame counter for a fresh measurement
+                        last_fps_print = xTaskGetTickCount();
                     } else {
                         esp_now_send(cam_mac, (const uint8_t*)"pyCAM_STR_0", 11);
                         
@@ -464,10 +482,13 @@ extern "C" void app_main(void) {
                 if (peer_type == PEER_CAR) {
                     sonar_active = !sonar_active;
                     if (sonar_active) {
-                        esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_SONAR_1", 13);
-                        strcpy(last_dist_str_on_screen, "");
+                        // CRITICAL PHY FIX: Unicast command to specific peer keeps PHY transmission rate high
+                        if (has_peer) esp_now_send(peer_mac, (const uint8_t*)"pyCAR_SONAR_1", 13);
+                        strcpy(last_dist_str_on_screen, ""); // Force text to reappear
                     } else {
-                        esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_SONAR_0", 13);
+                        // CRITICAL PHY FIX: Unicast command to specific peer keeps PHY transmission rate high
+                        if (has_peer) esp_now_send(peer_mac, (const uint8_t*)"pyCAR_SONAR_0", 13);
+                        
                         if (!show_camera_feed) {
                             lcd.draw_jpg("/Car.jpg", 0, 0);
                             if (line_follower_state) fill_circle(lcd, 220, 20, 6, COLOR_BLACK);
@@ -507,9 +528,10 @@ extern "C" void app_main(void) {
 
             uint8_t payload[6] = {67, lx_raw, ly_raw, rx_raw, ry_raw, btns};
             
-            // Send gamepad state to drone using Broadcast MAC to prevent ACK drops while sniffing video
+            // CRITICAL PHY FIX: Unicast transmission (peer_mac) avoids the Wi-Fi protocol forcing 
+            // a 1 Mbps broadcast rate, saving precious channel airtime for the camera stream frames.
             if (has_peer) {
-                esp_now_send(broadcast_mac, payload, sizeof(payload));
+                esp_now_send(peer_mac, payload, sizeof(payload));
             }
 
             last_tx_update = now;
