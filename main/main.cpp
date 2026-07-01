@@ -598,19 +598,7 @@ extern "C" void app_main(void) {
             if (state.b) btns |= (1 << 5);
             if (state.y) btns |= (1 << 4);
 
-            // FIX: Restored to 10 bytes exactly as the PyCar expects to receive it.
-            uint8_t payload[10] = {
-                67, 
-                lx_raw, 
-                ly_raw, 
-                rx_raw, 
-                ry_raw, 
-                btns,
-                (uint8_t)(state.start ? 1 : 0),
-                (uint8_t)(state.back ? 1 : 0),
-                (uint8_t)(state.left_stick_push ? 1 : 0),
-                (uint8_t)(state.right_stick_push ? 1 : 0)
-            };
+            uint8_t payload[6] = {67, lx_raw, ly_raw, rx_raw, ry_raw, btns};
             
             if (has_peer) {
                 esp_now_send(peer_mac, payload, sizeof(payload));
