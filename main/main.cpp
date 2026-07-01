@@ -338,6 +338,8 @@ extern "C" void app_main(void) {
         vTaskDelay(pdMS_TO_TICKS(50));
         esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
         vTaskDelay(pdMS_TO_TICKS(50));
+        esp_now_send(broadcast_mac, (const uint8_t*)"pyCAM_DISCOVER", 14);
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 
     lcd.fill_screen(COLOR_WHITE);
@@ -371,13 +373,17 @@ extern "C" void app_main(void) {
     while (true) {
         TickType_t now = xTaskGetTickCount();
 
-        // FIX: Only broadcast if we don't have a peer. This prevents spamming 
-        // the pyCar when connected and causing control packets to drop.
+        // FIX: Broadcast discover packets for missing peers.
+        // This ensures if the controller browns out and reconnects to the car instantly,
+        // it still discovers the camera in the background!
         if (!has_peer || !has_cam) {
             if (pdTICKS_TO_MS(now - last_discover) >= 3000) {
                 if (!has_peer) {
                     esp_now_send(broadcast_mac, (const uint8_t*)"pyDRONE_DISCOVER", 16);
                     esp_now_send(broadcast_mac, (const uint8_t*)"pyCAR_DISCOVER", 14);
+                }
+                if (!has_cam) {
+                    esp_now_send(broadcast_mac, (const uint8_t*)"pyCAM_DISCOVER", 14);
                 }
                 last_discover = now;
             }
